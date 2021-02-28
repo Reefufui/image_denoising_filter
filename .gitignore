@@ -1,4 +1,2 @@
 build/
-*.img
-*.png
-*.bmp
+result.bmp
