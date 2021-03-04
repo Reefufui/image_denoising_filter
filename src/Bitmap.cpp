@@ -2,7 +2,7 @@
 #include <fstream>
 #include <cstring>
 
-struct Pixel { unsigned char r, g, b; };
+#include "Bitmap.h"
 
 void WriteBMP(const char* fname, Pixel* a_pixelData, int width, int height)
 {
@@ -56,7 +56,7 @@ std::vector<unsigned int> LoadBMP(const char* filename, int* pW, int* pH)
 {
     FILE* f = fopen(filename, "rb");
 
-    if(f == NULL)
+    if (f == NULL)
     {
         (*pW) = 0;
         (*pH) = 0;
@@ -79,6 +79,43 @@ std::vector<unsigned int> LoadBMP(const char* filename, int* pW, int* pH)
         fread(data, sizeof(unsigned char), row_padded, f);
         for(int j = 0; j < width; j++)
             res[i*width+j] = (uint32_t(data[j*3+0]) << 16) | (uint32_t(data[j*3+1]) << 8)  | (uint32_t(data[j*3+2]) << 0);
+    }
+
+    fclose(f);
+    delete [] data;
+
+    (*pW) = width;
+    (*pH) = height;
+    return res;
+}
+
+std::vector<Pixel> LoadBMPpix(const char* filename, int* pW, int* pH)
+{
+    FILE* f = fopen(filename, "rb");
+
+    if (f == NULL)
+    {
+        (*pW) = 0;
+        (*pH) = 0;
+        return std::vector<Pixel>();
+    }
+
+    unsigned char info[54];
+    fread(info, sizeof(unsigned char), 54, f); // read the 54-byte header
+
+    int width  = *(int*)&info[18];
+    int height = *(int*)&info[22];
+
+    int row_padded      = (width*3 + 3) & (~3);
+    unsigned char* data = new unsigned char[row_padded];
+
+    std::vector<Pixel> res(width*height);
+
+    for(int i = 0; i < height; i++)
+    {
+        fread(data, sizeof(unsigned char), row_padded, f);
+        for(int j = 0; j < width; j++)
+            res[i * width + j] = Pixel{data[j * 3 + 0], data[j * 3 +1], data[j * 3 + 2]};
     }
 
     fclose(f);

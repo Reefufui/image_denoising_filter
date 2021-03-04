@@ -10,14 +10,11 @@
 
 #include <iostream>
 
-// const int WIDTH          = 3200;
-// const int HEIGHT         = 2400;
-// const int WORKGROUP_SIZE = 16;
-
 const int WIDTH          = 4096;
 const int HEIGHT         = 4096;
 const int WORKGROUP_SIZE = 16;
 
+const int TEXEL_WINDOW   = 20;
 
 #ifdef NDEBUG
 constexpr bool enableValidationLayers = false;
@@ -136,7 +133,7 @@ class ComputeApplication
 {
     private:
 
-        struct Pixel {
+        struct Pixel4 {
             float r, g, b, a;
         };
 
@@ -166,7 +163,7 @@ class ComputeApplication
         {
             void *mappedMemory = nullptr;
             vkMapMemory(a_device, a_stagingMem, 0, a_w * a_h * sizeof(float) * 4, 0, &mappedMemory);
-            Pixel* pmappedMemory = (Pixel *)mappedMemory;
+            Pixel4* pmappedMemory = (Pixel4 *)mappedMemory;
 
             for (int i = 0; i < a_w * a_h; ++i)
             {
@@ -175,7 +172,7 @@ class ComputeApplication
                 const uint32_t b = ((uint32_t) (255.0f * (pmappedMemory[i].b)));
                 a_imageData[i] = (r << 0) | (g << 8) | (b << 16);
             }
-            
+
             vkUnmapMemory(a_device, a_stagingMem);
         }
 
@@ -400,7 +397,7 @@ class ComputeApplication
             shaderStageCreateInfo.pName  = "main";
 
             // Allow pass (w,h) inside shader directly from command buffer
-            
+
             VkPushConstantRange pcRange{}; // #NOTE: we updated this to pass W/H inside shader
             pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             pcRange.offset     = 0;
@@ -664,7 +661,7 @@ class ComputeApplication
             vkDestroyInstance(m_instance, NULL);
         }
 
-        void Run()
+        void RunOnGPU()
         {
             const int deviceId{0};
             std::cout << "init vulkan for device " << deviceId << " ... \n";
@@ -682,7 +679,7 @@ class ComputeApplication
             m_device = vk_utils::CreateLogicalDevice(queueFamilyIndex, m_physicalDevice, m_enabledLayers);
             vkGetDeviceQueue(m_device, queueFamilyIndex, 0, &m_queue);
 
-            size_t bufferSize{sizeof(Pixel) * WIDTH * HEIGHT};
+            size_t bufferSize{sizeof(Pixel4) * WIDTH * HEIGHT};
             std::cout << "creating resources ... \n";
             CreateStagingBuffer(  m_device, m_physicalDevice, bufferSize, &m_bufferStaging, &m_bufferMemoryStaging);
             CreateWriteOnlyBuffer(  m_device, m_physicalDevice, bufferSize, &m_bufferGPU, &m_bufferMemoryGPU);
@@ -752,11 +749,133 @@ class ComputeApplication
                 SaveBMP("result.bmp", resultData.data(), WIDTH, HEIGHT);
                 resultData = std::vector<uint32_t>();
                 std::cout << std::endl;
+
             }
 
-            std::cout << "destroying all     ... \n";
+            std::cout << "destroying all vulkan resources    ... \n";
             Cleanup();
         }
+
+        void RunOnCPU()
+        {
+            int w{}, h{};
+            std::vector<Pixel> imageData{LoadBMPpix("res/Bathroom_LDR_0001.bmp", &w, &h)};
+            std::vector<Pixel> resultData(WIDTH * HEIGHT);
+
+            std::cout << "doing computations ... \n";
+
+            const int windowSize{5};
+
+            for (int y{TEXEL_WINDOW}; y <= h - TEXEL_WINDOW; ++y)
+            {
+                std::cout << "working on row: " << y << "\n";
+                if (y == 600) break;
+                for (int x{TEXEL_WINDOW}; x <= w - TEXEL_WINDOW; ++x)
+                {
+                    Pixel texColor = imageData[y * w + x];
+
+                    // controls the influence of distant pixels
+                    const float spatialSigma = 10.0;
+                    // controls the influence of pixels with intesity value different form pixel intensity
+                    const float colorSigma   = 0.2;
+
+                    float normWeight{0.0f};
+                    std::vector<double> weightColor(3);
+
+                    for (int i = -windowSize; i <= windowSize; ++i)
+                    {
+                        for (int j = -windowSize; j <= windowSize; ++j)
+                        {
+                            float spatialDistance = sqrt(pow(i, 2) + pow(j, 2));
+                            float spatialWeight   = exp(-0.5 * pow(spatialDistance / spatialSigma, 2));
+
+                            Pixel curColor      = imageData[w * (i + y) + j + x];
+                            float colorDistance = sqrt(float(pow(texColor.r - curColor.r, 2)
+                                        + pow(texColor.g - curColor.g, 2)
+                                        + pow(texColor.b - texColor.b, 2)));
+                            float colorWeight   = exp(-0.5 * pow(colorDistance / colorSigma, 2));
+
+                            float resultWeight = spatialWeight * colorWeight;
+
+                            weightColor[0] += curColor.r * resultWeight;
+                            weightColor[1] += curColor.g * resultWeight;
+                            weightColor[2] += curColor.b * resultWeight;
+                            normWeight     += resultWeight;
+                        }
+                    }
+
+                    resultData[y * w + x] = Pixel(weightColor[0] / normWeight,
+                            weightColor[1] / normWeight, 
+                            weightColor[2] / normWeight); 
+                }
+            }
+
+            std::cout << "saving image       ... \n";
+            WriteBMP("result_cpu.bmp", resultData.data(), WIDTH, HEIGHT);
+            resultData = std::vector<Pixel>();
+            std::cout << std::endl;
+        }
+
+        void RunOnCPUs()
+        {
+            int w{}, h{};
+            std::vector<Pixel> imageData{LoadBMPpix("res/Bathroom_LDR_0001.bmp", &w, &h)};
+            std::vector<Pixel> resultData(WIDTH * HEIGHT);
+
+            std::cout << "doing computations ... \n";
+
+            const int windowSize{5};
+
+#pragma omp parallel for default(shared)
+            for (int y = TEXEL_WINDOW; y <= h - TEXEL_WINDOW; ++y)
+            {
+                for (int x = TEXEL_WINDOW; x <= w - TEXEL_WINDOW; ++x)
+                {
+                    Pixel texColor = imageData[y * w + x];
+
+                    // controls the influence of distant pixels
+                    const float spatialSigma = 50.0;
+                    // controls the influence of pixels with intesity value different form pixel intensity
+                    const float colorSigma   = 0.2;
+
+                    float normWeight = 0.0f;
+                    std::vector<double> weightColor(3);
+
+                    for (int i = -windowSize; i <= windowSize; ++i)
+                    {
+                        for (int j = -windowSize; j <= windowSize; ++j)
+                        {
+                            float spatialDistance = sqrt(pow(i, 2) + pow(j, 2));
+                            float spatialWeight   = exp(-0.5 * pow(spatialDistance / spatialSigma, 2));
+
+                            Pixel curColor      = imageData[w * (i + y) + j + x];
+                            float colorDistance = sqrt(float(pow(texColor.r - curColor.r, 2)
+                                        + pow(texColor.g - curColor.g, 2)
+                                        + pow(texColor.b - texColor.b, 2)));
+                            float colorWeight   = exp(-0.5 * pow(colorDistance / colorSigma, 2));
+
+                            float resultWeight = spatialWeight * colorWeight;
+
+                            weightColor[0] += (double)curColor.r * resultWeight / 255.0;
+                            weightColor[1] += (double)curColor.g * resultWeight / 255.0;
+                            weightColor[2] += (double)curColor.b * resultWeight / 255.0;
+
+                            normWeight     += resultWeight;
+                        }
+                    }
+
+                    resultData[y * w + x] = Pixel((weightColor[0] / normWeight) * 255.0,
+                            (weightColor[1] / normWeight) * 255.0, 
+                            (weightColor[2] / normWeight) * 255.0); 
+                }
+            }
+
+            std::cout << "saving image       ... \n";
+            WriteBMP("result_cpu.bmp", resultData.data(), WIDTH, HEIGHT);
+            resultData = std::vector<Pixel>();
+            std::cout << std::endl;
+        }
+
 };
 
 int main()
@@ -765,7 +884,14 @@ int main()
 
     try
     {
-        app.Run();
+        std::cout << "Running on GPU\n---\n";
+        app.RunOnGPU();
+
+        std::cout << "Running on CPU (1 thread)\n---\n";
+//        app.RunOnCPU();
+
+        std::cout << "Running on CPU (OpenMP)\n---\n";
+        app.RunOnCPUs();
     }
     catch (const std::runtime_error& e)
     {
