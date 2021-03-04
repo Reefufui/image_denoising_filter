@@ -1,6 +1,7 @@
 Vulkan validation layers can be installed from `https://vulkan.lunarg.com/sdk/home`
 
-![](image.png)
+![](image.png =250x250)
+![](result.bmp =250x250)
 
 # Demo
 
