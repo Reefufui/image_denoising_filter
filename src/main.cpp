@@ -779,7 +779,7 @@ class ComputeApplication
                     // controls the influence of pixels with intesity value different form pixel intensity
                     const float colorSigma   = 0.2;
 
-                    float normWeight{0.0f};
+                    double normWeight{0.0};
                     std::vector<double> weightColor(3);
 
                     for (int i = -windowSize; i <= windowSize; ++i)
@@ -820,53 +820,68 @@ class ComputeApplication
         {
             int w{}, h{};
             std::vector<Pixel> imageData{LoadBMPpix("res/Bathroom_LDR_0001.bmp", &w, &h)};
-            std::vector<Pixel> resultData(WIDTH * HEIGHT);
+            std::vector<Pixel> resultData(w * h);
 
             std::cout << "doing computations ... \n";
 
-            const int windowSize{5};
+            const int windowSize{20};
+
+            // Fixing wierd behaviour
+            std::cout << "colors " << (double)imageData[100].r
+                << " " << (double)imageData[100].g
+                << " " << (double)imageData[100].b << "\n";
 
 #pragma omp parallel for default(shared)
-            for (int y = TEXEL_WINDOW; y <= h - TEXEL_WINDOW; ++y)
+            for (int y = windowSize; y <= h - windowSize; ++y)
             {
-                for (int x = TEXEL_WINDOW; x <= w - TEXEL_WINDOW; ++x)
+                for (int x = windowSize; x <= w - windowSize; ++x)
                 {
                     Pixel texColor = imageData[y * w + x];
 
                     // controls the influence of distant pixels
-                    const float spatialSigma = 50.0;
+                    const double spatialSigma = 10.0;
                     // controls the influence of pixels with intesity value different form pixel intensity
-                    const float colorSigma   = 0.2;
+                    const double colorSigma   = 0.2;
 
-                    float normWeight = 0.0f;
+                    double normWeight = 0.0f;
                     std::vector<double> weightColor(3);
 
                     for (int i = -windowSize; i <= windowSize; ++i)
                     {
                         for (int j = -windowSize; j <= windowSize; ++j)
                         {
-                            float spatialDistance = sqrt(pow(i, 2) + pow(j, 2));
-                            float spatialWeight   = exp(-0.5 * pow(spatialDistance / spatialSigma, 2));
+                            double spatialDistance = sqrt((double)pow(i, 2) + pow(j, 2));
+                            double spatialWeight   = exp(-0.5 * pow(spatialDistance / spatialSigma, 2));
 
-                            Pixel curColor      = imageData[w * (i + y) + j + x];
-                            float colorDistance = sqrt(float(pow(texColor.r - curColor.r, 2)
-                                        + pow(texColor.g - curColor.g, 2)
-                                        + pow(texColor.b - texColor.b, 2)));
-                            float colorWeight   = exp(-0.5 * pow(colorDistance / colorSigma, 2));
+                            Pixel curColor       = imageData[w * (i + y) + j + x];
+                            double colorDistance = sqrt(double(pow((double)texColor.r/255.0 - (double)curColor.r/255.0, 2)
+                                        + pow((double)texColor.g/255.0 - (double)curColor.g/255.0, 2)
+                                        + pow((double)texColor.b/255.0 - (double)texColor.b/255.0, 2)));
+                            double colorWeight   = exp(-0.5 * pow(colorDistance / colorSigma, 2));
 
-                            float resultWeight = spatialWeight * colorWeight;
+                            double resultWeight = spatialWeight * colorWeight;
 
-                            weightColor[0] += (double)curColor.r * resultWeight / 255.0;
-                            weightColor[1] += (double)curColor.g * resultWeight / 255.0;
-                            weightColor[2] += (double)curColor.b * resultWeight / 255.0;
+                            weightColor[0] += (double)curColor.r * resultWeight;
+                            weightColor[1] += (double)curColor.g * resultWeight;
+                            weightColor[2] += (double)curColor.b * resultWeight;
 
                             normWeight     += resultWeight;
+
+                            //std::cout << resultWeight << "\n";
                         }
                     }
 
-                    resultData[y * w + x] = Pixel((weightColor[0] / normWeight) * 255.0,
-                            (weightColor[1] / normWeight) * 255.0, 
-                            (weightColor[2] / normWeight) * 255.0); 
+                    // std::cout << normWeight << "\n";
+                    resultData[y * w + x] = Pixel(floor(weightColor[0] * 255.0 / normWeight),
+                            floor(weightColor[1] * 255.0 / normWeight), 
+                            floor(weightColor[2] * 255.0 / normWeight)); 
+
+                    /*
+                    std::cout << "---\n";
+                    std::cout << (int)imageData[y * w + x].r << " " << (int)imageData[y * w + x].g << " " << (int)imageData[y * w + x].b << "\n";
+                    std::cout << (int)resultData[y * w + x].r << " " << (int)resultData[y * w + x].g << " " << (int)resultData[y * w + x].b << "\n";
+                    std::cout << std::endl;
+                    */
                 }
             }
 
@@ -888,7 +903,7 @@ int main()
         app.RunOnGPU();
 
         std::cout << "Running on CPU (1 thread)\n---\n";
-//        app.RunOnCPU();
+        // app.RunOnCPU();
 
         std::cout << "Running on CPU (OpenMP)\n---\n";
         app.RunOnCPUs();
