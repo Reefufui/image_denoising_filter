@@ -16,10 +16,10 @@ void SaveBMP(const char* fname, const unsigned int* pixels, int w, int h);
   \param pW    - out image width
   \param pH    - out image height
   \return R8G8B8A8 data, 4 bytes per pixel, one byte for channel.
-
   Note that this function in this sample works correctly _ONLY_ for 24 bit RGB ".bmp" images.
   If you want to support gray-scale images or images with palette, please upgrade its implementation.
   */
 std::vector<unsigned int> LoadBMP(const char* fname, int* pW, int* pH);
 
 #endif
+

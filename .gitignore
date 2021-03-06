@@ -1,2 +1,3 @@
 build/
-result.bmp
+res/*.bmp
+*.bmp

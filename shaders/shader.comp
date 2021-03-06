@@ -48,12 +48,14 @@ vec4 bilateralFilter(ivec2 a_texCoord)
     {
         for (int j = -TEXEL_WINDOW; j <= TEXEL_WINDOW; ++j)
         {
-            ivec2 curCoord      = ivec2(i, j) + a_texCoord;
-            float spatialDistance = sqrt(float(pow(a_texCoord.x - curCoord.x, 2) + pow(a_texCoord.y - curCoord.y, 2)));
+            float spatialDistance = sqrt(float(pow(i, 2) + pow(j, 2)));
             float spatialWeight = exp(-0.5 * pow(spatialDistance / spatialSigma, 2.));
 
+            ivec2 curCoord      = ivec2(i, j) + a_texCoord;
             vec4  curColor      = texelFetch(inputTex, curCoord, 0);
-            float colorDistance = sqrt(float(pow(texColor.x - curColor.x, 2) + pow(texColor.y - curColor.y, 2)));
+            float colorDistance = sqrt(float(pow(texColor.x - curColor.x, 2)
+                + pow(texColor.y - curColor.y, 2)
+                + pow(texColor.z - curColor.z, 2)));
             float colorWeight   = exp(-0.5 * pow(colorDistance / colorSigma, 2.));
 
             float resultWeight = spatialWeight * colorWeight;

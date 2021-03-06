@@ -88,3 +88,4 @@ std::vector<unsigned int> LoadBMP(const char* filename, int* pW, int* pH)
     (*pH) = height;
     return res;
 }
+
