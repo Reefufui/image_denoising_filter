@@ -9,7 +9,7 @@ add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 
 set(CMAKE_CXX_STANDARD 20)
 
-include_directories(${Vulkan_INCLUDE_DIR})
+include_directories(${Vulkan_INCLUDE_DIR} src/vendor)
 
 set(ALL_LIBS OpenMP::OpenMP_CXX ${Vulkan_LIBRARY} )
 
@@ -20,7 +20,7 @@ add_executable(vulkan_denoice src/main.cpp src/vk_utils.h src/vk_utils.cpp src/B
 
 set_target_properties(vulkan_denoice PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMPILE_FLAGS "-fopenmp"
+    COMPILE_FLAGS "-fopenmp -g"
     )
 
 target_link_libraries(vulkan_denoice ${ALL_LIBS} )

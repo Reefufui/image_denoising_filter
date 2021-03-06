@@ -1,7 +1,8 @@
 cd build
 make -j 5
 cd ..
-./build/vulkan_denoice
+./build/vulkan_denoice res/cornelbox.bmp
 qview result.bmp &
-qview result_cpu.bmp
-
+qview cpu_result.bmp &
+rm result.bmp
+rm cpu_result.bmp

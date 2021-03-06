@@ -5,16 +5,18 @@
 #include <cassert>
 #include <stdexcept>
 #include <cmath>
+#include <chrono>
 
-#include "Bitmap.h" // Save bmp file
+#include "Bitmap.h"
+#include "cpptqdm/tqdm.h"
 
 #include <iostream>
 
-const int WIDTH          = 4096;
-const int HEIGHT         = 4096;
-const int WORKGROUP_SIZE = 16;
+#define FOREGROUND_COLOR "\033[38;2;0;0;0m"
+#define BACKGROUND_COLOR "\033[48;2;0;255;0m"
+#define CLEAR_COLOR      "\033[0m"
 
-const int TEXEL_WINDOW   = 20;
+const int WORKGROUP_SIZE = 16;
 
 #ifdef NDEBUG
 constexpr bool enableValidationLayers = false;
@@ -24,8 +26,38 @@ constexpr bool enableValidationLayers = true;
 
 #include "vk_utils.h"
 
+class Timer
+{
+    private:
+        using clock_t = std::chrono::high_resolution_clock;
+        using second_t = std::chrono::duration<double, std::ratio<1> >;
+
+        std::chrono::time_point<clock_t> m_beg;
+
+    public:
+        Timer() : m_beg(clock_t::now())
+        {
+        }
+
+        void reset()
+        {
+            m_beg = clock_t::now();
+        }
+
+        double elapsed() const
+        {
+            return std::chrono::duration_cast<second_t>(clock_t::now() - m_beg).count();
+        }
+};
+
 struct CustomVulkanTexture
 {
+    VkDeviceMemory imagesMemoryGPU; 
+    // TODO: this is bad design in fact, you should store memory somewhere else and/or use memory pools;
+    VkImage        imageGPU;
+    VkSampler      imageSampler;
+    VkImageView    imageView;
+
     CustomVulkanTexture() : imagesMemoryGPU(0), imageGPU(0), imageSampler(0), imageView(0) {}
 
     void Release(VkDevice a_device)
@@ -35,12 +67,6 @@ struct CustomVulkanTexture
         vkDestroyImageView(a_device, imageView,       NULL);
         vkDestroySampler  (a_device, imageSampler,    NULL);
     }
-
-    VkDeviceMemory imagesMemoryGPU; 
-    // TODO: this is bad design in fact, you should store memory somewhere else and/or use memory pools;
-    VkImage        imageGPU;
-    VkSampler      imageSampler;
-    VkImageView    imageView;
 
     static CustomVulkanTexture Create2DTextureRGBA256(VkDevice a_device, VkPhysicalDevice a_physDevice, int w, int h);
 
@@ -133,7 +159,7 @@ class ComputeApplication
 {
     private:
 
-        struct Pixel4 {
+        struct Pixel {
             float r, g, b, a;
         };
 
@@ -154,16 +180,18 @@ class ComputeApplication
         CustomVulkanTexture       m_img{};
         std::vector<const char *> m_enabledLayers{};
         VkQueue                   m_queue{};
+        char*                     m_imgPath{};
 
     public:
 
-        ComputeApplication() : m_bufferDynamic(NULL), m_bufferMemoryDynamic(NULL) { }
+        ComputeApplication(char* imgPath)
+            : m_bufferDynamic(NULL), m_bufferMemoryDynamic(NULL), m_imgPath(imgPath) { }
 
         static void GetImageFromGPU(VkDevice a_device, VkDeviceMemory a_stagingMem, int a_w, int a_h, uint32_t *a_imageData)
         {
             void *mappedMemory = nullptr;
             vkMapMemory(a_device, a_stagingMem, 0, a_w * a_h * sizeof(float) * 4, 0, &mappedMemory);
-            Pixel4* pmappedMemory = (Pixel4 *)mappedMemory;
+            Pixel* pmappedMemory = (Pixel *)mappedMemory;
 
             for (int i = 0; i < a_w * a_h; ++i)
             {
@@ -465,7 +493,7 @@ class ComputeApplication
         }
 
         static void RecordCommandsOfExecuteAndTransfer(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline,VkPipelineLayout a_layout, const VkDescriptorSet &a_ds, VkImage a_image,
-                size_t a_bufferSize, VkBuffer a_bufferGPU, VkBuffer a_bufferStaging)
+                size_t a_bufferSize, VkBuffer a_bufferGPU, VkBuffer a_bufferStaging, int a_w, int a_h)
         {
             VkCommandBufferBeginInfo beginInfo{};
             beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -478,10 +506,10 @@ class ComputeApplication
             vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
             vkCmdBindDescriptorSets(a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_layout, 0, 1, &a_ds, 0, NULL);
 
-            int wh[2]{ WIDTH, HEIGHT };
+            int wh[2]{ a_w, a_h };
             vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
 
-            vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(WIDTH / float(WORKGROUP_SIZE)), (uint32_t)ceil(HEIGHT / float(WORKGROUP_SIZE)), 1);
+            vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
 
             VkBufferMemoryBarrier bufBarr = {};
             bufBarr.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -664,7 +692,7 @@ class ComputeApplication
         void RunOnGPU()
         {
             const int deviceId{0};
-            std::cout << "init vulkan for device " << deviceId << " ... \n";
+            std::cout << "\tinit vulkan for device " << deviceId << "\n";
 
             m_instance = vk_utils::CreateInstance(enableValidationLayers, m_enabledLayers);
             if (enableValidationLayers)
@@ -679,20 +707,19 @@ class ComputeApplication
             m_device = vk_utils::CreateLogicalDevice(queueFamilyIndex, m_physicalDevice, m_enabledLayers);
             vkGetDeviceQueue(m_device, queueFamilyIndex, 0, &m_queue);
 
-            size_t bufferSize{sizeof(Pixel4) * WIDTH * HEIGHT};
-            std::cout << "creating resources ... \n";
+            int w{}, h{};
+            auto imageData{LoadBMP(m_imgPath, &w, &h)};
+            size_t bufferSize{sizeof(Pixel) * w * h};
+
+            std::cout << "\tcreating resources\n";
             CreateStagingBuffer(  m_device, m_physicalDevice, bufferSize, &m_bufferStaging, &m_bufferMemoryStaging);
             CreateWriteOnlyBuffer(  m_device, m_physicalDevice, bufferSize, &m_bufferGPU, &m_bufferMemoryGPU);
 
             // test image filter pipeline here ... temp solution
 
-            int w{}, h{};
-            auto imageData{LoadBMP("res/Bathroom_LDR_0001.bmp", &w, &h)};
-
-            std::cout << w << " " << h << "\n";
             if (!imageData.size())
             {
-                std::cout << "can't load texture 'Bathroom_LDR_0001.png' \n";
+                std::cout << "\tcan't load texture " << m_imgPath << "\n";
                 return;
             }
 
@@ -706,7 +733,7 @@ class ComputeApplication
             // (device, bufferGPU, bufferSize, descriptorSetLayout) ==>  #NOTE: we write now to 'bufferGPU', not 'bufferStaging'
             // (descriptorPool, descriptorSet, imageSamplers, imageViews)
 
-            std::cout << "compiling shaders  ... \n";
+            std::cout << "\tcompiling shaders\n";
             CreateComputePipeline(m_device, m_descriptorSetLayout,
                     &m_computeShaderModule, &m_pipeline, &m_pipelineLayout);
 
@@ -728,185 +755,156 @@ class ComputeApplication
                 RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, m_pipeline, w, h, m_bufferDynamic, // bufferDynamic ==> imageGPU
                         &m_img.imageGPU, m_bufferStaging);
 
-                std::cout << "doing some computations ... \n";
+                std::cout << "\tdoing some computations\n";
                 RunCommandBuffer(m_commandBuffer, m_queue, m_device);
             }
 
             {
                 RecordCommandsOfExecuteAndTransfer(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, m_img.imageGPU,
-                        bufferSize, m_bufferGPU, m_bufferStaging);
-                std::cout << "doing computations ... \n";
+                        bufferSize, m_bufferGPU, m_bufferStaging, w, h);
+                std::cout << "\tdoing computations\n";
                 RunCommandBuffer(m_commandBuffer, m_queue, m_device);
                 // The former command rendered a mandelbrot set to a bufferStaging.
                 // Save that bufferStaging as a png on disk.
-                std::cout << "geting image back  ... \n";
-                //saveRenderedImageFromDeviceMemory(device, bufferMemoryStaging, 0, WIDTH, HEIGHT);
-                std::vector<uint32_t> resultData( WIDTH * HEIGHT);
-                GetImageFromGPU(m_device, m_bufferMemoryStaging, WIDTH, HEIGHT,
+                std::cout << "\tgeting image back\n";
+                //saveRenderedImageFromDeviceMemory(device, bufferMemoryStaging, 0, w, h);
+                std::vector<uint32_t> resultData(w * h);
+                GetImageFromGPU(m_device, m_bufferMemoryStaging, w, h,
                         resultData.data());
 
-                std::cout << "saving image       ... \n";
-                SaveBMP("result.bmp", resultData.data(), WIDTH, HEIGHT);
+                std::cout << "\tsaving image\n";
+                SaveBMP("result.bmp", resultData.data(), w, h);
                 resultData = std::vector<uint32_t>();
-                std::cout << std::endl;
-
             }
 
-            std::cout << "destroying all vulkan resources    ... \n";
+            std::cout << "\tdestroying all\n";
             Cleanup();
         }
 
-        void RunOnCPU()
+        void RunOnCPU(int numThreads)
         {
             int w{}, h{};
-            std::vector<Pixel> imageData{LoadBMPpix("res/Bathroom_LDR_0001.bmp", &w, &h)};
-            std::vector<Pixel> resultData(WIDTH * HEIGHT);
+            std::vector<unsigned int> imageData{LoadBMP(m_imgPath, &w, &h)};
+            std::vector<Pixel>        inputPixels(w * h);
+            std::vector<Pixel>        outputPixels(w * h);
 
-            std::cout << "doing computations ... \n";
-
-            const int windowSize{5};
-
-            for (int y{TEXEL_WINDOW}; y <= h - TEXEL_WINDOW; ++y)
+            for (int i{}; i < w * h; ++i)
             {
-                std::cout << "working on row: " << y << "\n";
-                if (y == 600) break;
-                for (int x{TEXEL_WINDOW}; x <= w - TEXEL_WINDOW; ++x)
+                const uint32_t b = (imageData[i] & 0x00FF0000) >> 16;
+                const uint32_t g = (imageData[i] & 0x0000FF00) >> 8;
+                const uint32_t r = (imageData[i] & 0x000000FF);
+
+                inputPixels[i].r = float(r)*(1.0f/255.0f);
+                inputPixels[i].g = float(g)*(1.0f/255.0f);
+                inputPixels[i].b = float(b)*(1.0f/255.0f);
+                inputPixels[i].a = 0.0f;
+            }
+
+
+            std::cout << "\tdoing computations\n";
+
+            const int windowSize{10};
+
+            tqdm bar{};
+            bar.set_theme_braille();
+
+            for (int y = windowSize; y <= h - windowSize; ++y)
+            {
+                bar.progress(y, h - windowSize);
+#pragma omp parallel for default(shared) num_threads(numThreads)
+                for (int x = windowSize; x <= w - windowSize; ++x)
                 {
-                    Pixel texColor = imageData[y * w + x];
+                    Pixel texColor = inputPixels[y * w + x];
 
                     // controls the influence of distant pixels
-                    const float spatialSigma = 10.0;
+                    const float spatialSigma = 10.0f;
                     // controls the influence of pixels with intesity value different form pixel intensity
-                    const float colorSigma   = 0.2;
+                    const float colorSigma   = 0.2f;
 
-                    double normWeight{0.0};
-                    std::vector<double> weightColor(3);
+                    float normWeight = 0.0f;
+                    Pixel weightColor{};
 
                     for (int i = -windowSize; i <= windowSize; ++i)
                     {
                         for (int j = -windowSize; j <= windowSize; ++j)
                         {
-                            float spatialDistance = sqrt(pow(i, 2) + pow(j, 2));
+                            float spatialDistance = sqrt((float)pow(i, 2) + pow(j, 2));
                             float spatialWeight   = exp(-0.5 * pow(spatialDistance / spatialSigma, 2));
 
-                            Pixel curColor      = imageData[w * (i + y) + j + x];
-                            float colorDistance = sqrt(float(pow(texColor.r - curColor.r, 2)
-                                        + pow(texColor.g - curColor.g, 2)
-                                        + pow(texColor.b - texColor.b, 2)));
+                            Pixel curColor       = inputPixels[w * (i + y) + j + x];
+                            float colorDistance = sqrt(pow(texColor.r - curColor.r, 2)
+                                    + pow(texColor.g - curColor.g, 2)
+                                    + pow(texColor.b - texColor.b, 2));
                             float colorWeight   = exp(-0.5 * pow(colorDistance / colorSigma, 2));
 
                             float resultWeight = spatialWeight * colorWeight;
 
-                            weightColor[0] += curColor.r * resultWeight;
-                            weightColor[1] += curColor.g * resultWeight;
-                            weightColor[2] += curColor.b * resultWeight;
+                            weightColor.r += curColor.r * resultWeight;
+                            weightColor.g += curColor.g * resultWeight;
+                            weightColor.b += curColor.b * resultWeight;
+
                             normWeight     += resultWeight;
                         }
                     }
 
-                    resultData[y * w + x] = Pixel(weightColor[0] / normWeight,
-                            weightColor[1] / normWeight, 
-                            weightColor[2] / normWeight); 
+                    outputPixels[y * w + x] = Pixel{ weightColor.r / normWeight, weightColor.g / normWeight, weightColor.b /normWeight, 0.0f};
                 }
             }
 
-            std::cout << "saving image       ... \n";
-            WriteBMP("result_cpu.bmp", resultData.data(), WIDTH, HEIGHT);
-            resultData = std::vector<Pixel>();
-            std::cout << std::endl;
-        }
+            bar.finish();
+            std::cout << "\tsaving image\n";
 
-        void RunOnCPUs()
-        {
-            int w{}, h{};
-            std::vector<Pixel> imageData{LoadBMPpix("res/Bathroom_LDR_0001.bmp", &w, &h)};
-            std::vector<Pixel> resultData(w * h);
-
-            std::cout << "doing computations ... \n";
-
-            const int windowSize{20};
-
-            // Fixing wierd behaviour
-            std::cout << "colors " << (double)imageData[100].r
-                << " " << (double)imageData[100].g
-                << " " << (double)imageData[100].b << "\n";
-
-#pragma omp parallel for default(shared)
-            for (int y = windowSize; y <= h - windowSize; ++y)
+            for (int i = 0; i < w * h; ++i)
             {
-                for (int x = windowSize; x <= w - windowSize; ++x)
-                {
-                    Pixel texColor = imageData[y * w + x];
-
-                    // controls the influence of distant pixels
-                    const double spatialSigma = 10.0;
-                    // controls the influence of pixels with intesity value different form pixel intensity
-                    const double colorSigma   = 0.2;
-
-                    double normWeight = 0.0f;
-                    std::vector<double> weightColor(3);
-
-                    for (int i = -windowSize; i <= windowSize; ++i)
-                    {
-                        for (int j = -windowSize; j <= windowSize; ++j)
-                        {
-                            double spatialDistance = sqrt((double)pow(i, 2) + pow(j, 2));
-                            double spatialWeight   = exp(-0.5 * pow(spatialDistance / spatialSigma, 2));
-
-                            Pixel curColor       = imageData[w * (i + y) + j + x];
-                            double colorDistance = sqrt(double(pow((double)texColor.r/255.0 - (double)curColor.r/255.0, 2)
-                                        + pow((double)texColor.g/255.0 - (double)curColor.g/255.0, 2)
-                                        + pow((double)texColor.b/255.0 - (double)texColor.b/255.0, 2)));
-                            double colorWeight   = exp(-0.5 * pow(colorDistance / colorSigma, 2));
-
-                            double resultWeight = spatialWeight * colorWeight;
-
-                            weightColor[0] += (double)curColor.r * resultWeight;
-                            weightColor[1] += (double)curColor.g * resultWeight;
-                            weightColor[2] += (double)curColor.b * resultWeight;
-
-                            normWeight     += resultWeight;
-
-                            //std::cout << resultWeight << "\n";
-                        }
-                    }
-
-                    // std::cout << normWeight << "\n";
-                    resultData[y * w + x] = Pixel(floor(weightColor[0] * 255.0 / normWeight),
-                            floor(weightColor[1] * 255.0 / normWeight), 
-                            floor(weightColor[2] * 255.0 / normWeight)); 
-
-                    /*
-                    std::cout << "---\n";
-                    std::cout << (int)imageData[y * w + x].r << " " << (int)imageData[y * w + x].g << " " << (int)imageData[y * w + x].b << "\n";
-                    std::cout << (int)resultData[y * w + x].r << " " << (int)resultData[y * w + x].g << " " << (int)resultData[y * w + x].b << "\n";
-                    std::cout << std::endl;
-                    */
-                }
+                const uint32_t r = ((uint32_t) (255.0f * (outputPixels[i].r)));
+                const uint32_t g = ((uint32_t) (255.0f * (outputPixels[i].g)));
+                const uint32_t b = ((uint32_t) (255.0f * (outputPixels[i].b)));
+                imageData[i] = (r << 0) | (g << 8) | (b << 16);
             }
 
-            std::cout << "saving image       ... \n";
-            WriteBMP("result_cpu.bmp", resultData.data(), WIDTH, HEIGHT);
-            resultData = std::vector<Pixel>();
-            std::cout << std::endl;
+            SaveBMP("cpu_result.bmp", imageData.data(), w, h);
         }
-
 };
 
-int main()
+int main(int argc, char **argv)
 {
-    ComputeApplication app{};
+    if (argc != 2)
+    {
+        std::cout << "Invalid number of arguments!\n";
+        return EXIT_FAILURE;
+    }
 
     try
     {
-        std::cout << "Running on GPU\n---\n";
+        ComputeApplication app{argv[1]};
+        Timer timer{};
+
+        std::cout << "######\nRunning on GPU\n######\n";
         app.RunOnGPU();
+        std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
+            << "Time taken (with copying) "
+            << timer.elapsed()
+            << " seconds\n\n"
+            << CLEAR_COLOR;
 
-        std::cout << "Running on CPU (1 thread)\n---\n";
-        // app.RunOnCPU();
+        std::cout << "######\nRunning on CPU (1 thread)\n######\n";
+        timer.reset();
+        app.RunOnCPU(1);
+        std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
+            << "Time taken: "
+            << timer.elapsed()
+            << " seconds\n\n"
+            << CLEAR_COLOR;
 
-        std::cout << "Running on CPU (OpenMP)\n---\n";
-        app.RunOnCPUs();
+
+        std::cout << "######\nRunning on CPU (8 thread)\n######\n";
+        timer.reset();
+        app.RunOnCPU(8);
+        std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
+            << "Time taken: "
+            << timer.elapsed()
+            << " seconds\n\n"
+            << CLEAR_COLOR;
     }
     catch (const std::runtime_error& e)
     {
@@ -916,3 +914,4 @@ int main()
 
     return EXIT_SUCCESS;
 }
+

@@ -178,24 +178,24 @@ device in the list. But in a real and serious application, those limitations sho
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 
     if(a_printInfo)
-        std::cout << "FindPhysicalDevice: { " << std::endl;
+        std::cout << "\tFindPhysicalDevice: { " << std::endl;
 
     VkPhysicalDeviceProperties props;
     VkPhysicalDeviceFeatures   features;
 
-    for (int i=0;i<devices.size();i++)
+    for (int i{}; i < devices.size(); ++i)
     {
         vkGetPhysicalDeviceProperties(devices[i], &props);
         vkGetPhysicalDeviceFeatures(devices[i], &features);
 
         if(a_printInfo)
-            std::cout << "  device " << i << ", name = " << props.deviceName << std::endl;
+            std::cout << "\t\tdevice " << i << ", name = " << props.deviceName << std::endl;
 
         if(i == a_preferredDeviceId)
             physicalDevice = devices[i];
     }
     if(a_printInfo)
-        std::cout << "}" << std::endl;
+        std::cout << "\t}" << std::endl;
 
 
     // try to select some device if preferred was not selected
