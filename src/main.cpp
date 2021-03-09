@@ -73,10 +73,10 @@ struct CustomVulkanTexture
     static void CreateTexture(VkDevice a_device, VkPhysicalDevice a_physDevice, const int a_width, const int a_height,
             VkImage *a_images, VkDeviceMemory *a_pImagesMemory)
     {
-        VkImageCreateInfo imgCreateInfo = {};
+        VkImageCreateInfo imgCreateInfo{};
         imgCreateInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imgCreateInfo.pNext         = nullptr;
-        imgCreateInfo.flags         = 0; // not sure about this ...
+        imgCreateInfo.flags         = 0;
         imgCreateInfo.imageType     = VK_IMAGE_TYPE_2D;
         imgCreateInfo.format        = VK_FORMAT_R8G8B8A8_UNORM;
         imgCreateInfo.extent        = VkExtent3D{uint32_t(a_width), uint32_t(a_height), 1};
@@ -89,9 +89,9 @@ struct CustomVulkanTexture
         imgCreateInfo.arrayLayers   = 1;
         VK_CHECK_RESULT(vkCreateImage(a_device, &imgCreateInfo, nullptr, a_images + 0));
 
-        VkMemoryRequirements memoryRequirements;
+        VkMemoryRequirements memoryRequirements{};
         vkGetImageMemoryRequirements(a_device, a_images[0], &memoryRequirements);
-        VkMemoryAllocateInfo allocateInfo = {};
+        VkMemoryAllocateInfo allocateInfo{};
         allocateInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocateInfo.allocationSize  = memoryRequirements.size;
         allocateInfo.memoryTypeIndex = vk_utils::FindMemoryType(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, a_physDevice);
@@ -149,6 +149,7 @@ CustomVulkanTexture CustomVulkanTexture::Create2DTextureRGBA256(VkDevice a_devic
 
     res.CreateTexture(a_device, a_physDevice, w, h, &res.imageGPU, &res.imagesMemoryGPU);
     // (w,h) ==> (imageGPU, imagesMemoryGPU); for R8G8B8A8_UNORM format
+    // TODO: implement RGBA8 format
 
     res.CreateOther(a_device);
 
@@ -175,17 +176,22 @@ class ComputeApplication
         VkDescriptorPool          m_descriptorPool{};
         VkDescriptorSet           m_descriptorSet{};
         VkDescriptorSetLayout     m_descriptorSetLayout{};
-        VkBuffer                  m_bufferGPU{}, m_bufferStaging{}, m_bufferDynamic{};
-        VkDeviceMemory            m_bufferMemoryGPU{}, m_bufferMemoryStaging{}, m_bufferMemoryDynamic{};
+        VkBuffer                  m_bufferGPU{};
+        VkBuffer                  m_bufferStaging{};
+        VkBuffer                  m_bufferDynamic{};
+        VkBuffer                  m_bufferTexel{};
+        VkDeviceMemory            m_bufferMemoryGPU{}, m_bufferMemoryStaging{}, m_bufferMemoryDynamic{}, m_bufferMemoryTexel{};
+        VkBufferView              m_texelBufferView{};
         CustomVulkanTexture       m_img{};
         std::vector<const char *> m_enabledLayers{};
         VkQueue                   m_queue{};
         char*                     m_imgPath{};
+        bool                      m_linear{};
 
     public:
 
-        ComputeApplication(char* imgPath)
-            : m_bufferDynamic(NULL), m_bufferMemoryDynamic(NULL), m_imgPath(imgPath) { }
+        ComputeApplication(char* imgPath, bool linear = false)
+            : m_bufferDynamic(NULL), m_bufferMemoryDynamic(NULL), m_imgPath(imgPath), m_linear(linear) { }
 
         static void GetImageFromGPU(VkDevice a_device, VkDeviceMemory a_stagingMem, int a_w, int a_h, uint32_t *a_imageData)
         {
@@ -240,18 +246,20 @@ class ComputeApplication
         }
 
 
-        // CPU
+        // CPU (this buffer takes data from GPU)
         static void CreateStagingBuffer(VkDevice a_device, VkPhysicalDevice a_physDevice, const size_t a_bufferSize,
                 VkBuffer *a_pBuffer, VkDeviceMemory *a_pBufferMemory)
         {
             VkBufferCreateInfo bufferCreateInfo{};
             bufferCreateInfo.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             bufferCreateInfo.size        = a_bufferSize;
+
             bufferCreateInfo.usage       = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            //  #NOTE bufferStaging is used as a storage bufferStaging and we can _copy_to_ it
 
             VK_CHECK_RESULT(vkCreateBuffer(a_device, &bufferCreateInfo, NULL, a_pBuffer));
+
+            //----
 
             VkMemoryRequirements memoryRequirements{};
             vkGetBufferMemoryRequirements(a_device, (*a_pBuffer), &memoryRequirements);
@@ -269,8 +277,6 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBindBufferMemory(a_device, (*a_pBuffer), (*a_pBufferMemory), 0));
         }
 
-
-        //GPU
         static void CreateDynamicBuffer(VkDevice a_device, VkPhysicalDevice a_physDevice, const size_t a_bufferSize,
                 VkBuffer *a_pBuffer, VkDeviceMemory *a_pBufferMemory)
         {
@@ -298,6 +304,48 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBindBufferMemory(a_device, (*a_pBuffer), (*a_pBufferMemory), 0));
         }
 
+        static void CreateTexelBuffer(VkDevice a_device, VkPhysicalDevice a_physDevice, const size_t a_bufferSize,
+                VkBuffer *a_pBuffer, VkDeviceMemory *a_pBufferMemory)
+        {
+            VkBufferCreateInfo bufferCreateInfo{};
+            bufferCreateInfo.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            bufferCreateInfo.size        = a_bufferSize;
+            bufferCreateInfo.usage       = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
+            bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+            VK_CHECK_RESULT(vkCreateBuffer(a_device, &bufferCreateInfo, NULL, a_pBuffer));
+
+            VkMemoryRequirements memoryRequirements;
+            vkGetBufferMemoryRequirements(a_device, (*a_pBuffer), &memoryRequirements);
+
+            // This texel buffer is coherent and mappable
+            VkMemoryAllocateInfo allocateInfo = {};
+            allocateInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocateInfo.allocationSize  = memoryRequirements.size;
+            allocateInfo.memoryTypeIndex = vk_utils::FindMemoryType(
+                    memoryRequirements.memoryTypeBits,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    a_physDevice);
+
+            VK_CHECK_RESULT(vkAllocateMemory(a_device, &allocateInfo, NULL, a_pBufferMemory));
+
+            VK_CHECK_RESULT(vkBindBufferMemory(a_device, (*a_pBuffer), (*a_pBufferMemory), 0));
+        }
+
+        static void CreateTexelBufferView(VkDevice a_device, const size_t a_bufferSize, VkBuffer a_buffer, VkBufferView *a_pBufferView)
+        {
+            VkBufferViewCreateInfo bufferViewCreateInfo{};
+            bufferViewCreateInfo.sType   = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO;
+            bufferViewCreateInfo.pNext   = nullptr;
+            bufferViewCreateInfo.flags   = 0;
+            bufferViewCreateInfo.buffer  = a_buffer;
+            bufferViewCreateInfo.format  = VK_FORMAT_R8G8B8A8_UNORM;
+            bufferViewCreateInfo.offset  = 0;
+            bufferViewCreateInfo.range   = a_bufferSize;
+
+            VK_CHECK_RESULT(vkCreateBufferView(a_device, &bufferViewCreateInfo, NULL, a_pBufferView));
+        }
 
         static void CreateWriteOnlyBuffer(VkDevice a_device, VkPhysicalDevice a_physDevice, const size_t a_bufferSize,
                 VkBuffer *a_pBuffer, VkDeviceMemory *a_pBufferMemory)
@@ -313,7 +361,6 @@ class ComputeApplication
             VkMemoryRequirements memoryRequirements;
             vkGetBufferMemoryRequirements(a_device, (*a_pBuffer), &memoryRequirements);
 
-
             VkMemoryAllocateInfo allocateInfo = {};
             allocateInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
             allocateInfo.allocationSize  = memoryRequirements.size;
@@ -327,17 +374,21 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBindBufferMemory(a_device, (*a_pBuffer), (*a_pBufferMemory), 0));
         }
 
-        static void CreateDescriptorSetLayout(VkDevice a_device, VkDescriptorSetLayout *a_pDSLayout)
+        static void CreateDescriptorSetLayout(VkDevice a_device, VkDescriptorSetLayout *a_pDSLayout, bool a_linear = false)
         {
             VkDescriptorSetLayoutBinding descriptorSetLayoutBinding[2];
+
+            // Compute shader output image storage
             descriptorSetLayoutBinding[0].binding            = 0;
             descriptorSetLayoutBinding[0].descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             descriptorSetLayoutBinding[0].descriptorCount    = 1;
             descriptorSetLayoutBinding[0].stageFlags         = VK_SHADER_STAGE_COMPUTE_BIT;
             descriptorSetLayoutBinding[0].pImmutableSamplers = nullptr;
 
+            // Compute shader input image storage
             descriptorSetLayoutBinding[1].binding            = 1;
-            descriptorSetLayoutBinding[1].descriptorType     = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorSetLayoutBinding[1].descriptorType     = (a_linear) ? VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER
+                : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             descriptorSetLayoutBinding[1].descriptorCount    = 1;
             descriptorSetLayoutBinding[1].stageFlags         = VK_SHADER_STAGE_COMPUTE_BIT;
             descriptorSetLayoutBinding[1].pImmutableSamplers = nullptr;
@@ -350,15 +401,15 @@ class ComputeApplication
             VK_CHECK_RESULT(vkCreateDescriptorSetLayout(a_device, &descriptorSetLayoutCreateInfo, NULL, a_pDSLayout));
         }
 
-        void CreateDescriptorSetForOurBufferAndTexture(VkDevice a_device, VkBuffer a_buffer, size_t a_bufferSize, const VkDescriptorSetLayout *a_pDSLayout, VkImage a_image,
-                VkDescriptorPool *a_pDSPool, VkDescriptorSet *a_pDS, VkSampler *a_samplers, VkImageView *a_views)
+        void CreateDescriptorSet(VkDevice a_device, VkBuffer a_buffer, size_t a_bufferSize, const VkDescriptorSetLayout *a_pDSLayout, VkImage a_image,
+                VkBuffer a_texelBuffer, VkBufferView *a_texelBufferView, VkDescriptorPool *a_pDSPool, VkDescriptorSet *a_pDS, bool a_linear = false)
         {
             VkDescriptorPoolSize descriptorPoolSize[2];
             descriptorPoolSize[0].type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             descriptorPoolSize[0].descriptorCount = 1;
-            descriptorPoolSize[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorPoolSize[1].type            = (a_linear) ? VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER
+                : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             descriptorPoolSize[1].descriptorCount = 1;
-
 
             VkDescriptorPoolCreateInfo descriptorPoolCreateInfo{};
             descriptorPoolCreateInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -376,6 +427,7 @@ class ComputeApplication
 
             VK_CHECK_RESULT(vkAllocateDescriptorSets(a_device, &descriptorSetAllocateInfo, a_pDS));
 
+            // OUTPUT
             VkDescriptorBufferInfo descriptorBufferInfo{};
             descriptorBufferInfo.buffer = a_buffer;
             descriptorBufferInfo.offset = 0;
@@ -391,26 +443,43 @@ class ComputeApplication
 
             vkUpdateDescriptorSets(a_device, 1, &writeDescriptorSet, 0, NULL);
 
+            // INPUT (depends on a_linear: image or linear buffer)
             VkDescriptorImageInfo descriptorImageInfo{};
+            VkDescriptorBufferInfo descriptorTexelBufferInfo{};
+
             descriptorImageInfo.sampler     = m_img.imageSampler;
             descriptorImageInfo.imageView   = m_img.imageView;
             descriptorImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                
+            descriptorTexelBufferInfo.buffer = a_texelBuffer;
+            descriptorTexelBufferInfo.offset = 0;
+            descriptorTexelBufferInfo.range  = a_bufferSize;
 
             VkWriteDescriptorSet writeDescriptorSet2{};
             writeDescriptorSet2.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writeDescriptorSet2.dstSet          = *(a_pDS+0);
             writeDescriptorSet2.dstBinding      = 1;
             writeDescriptorSet2.descriptorCount = 1;
-            writeDescriptorSet2.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writeDescriptorSet2.pImageInfo      = &descriptorImageInfo;
+            writeDescriptorSet2.descriptorType  = (a_linear) ? VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER
+                : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+
+            if (a_linear)
+            {
+                writeDescriptorSet2.pBufferInfo = &descriptorTexelBufferInfo;
+                writeDescriptorSet2.pTexelBufferView = a_texelBufferView;
+            }
+            else
+            {
+                writeDescriptorSet2.pImageInfo = &descriptorImageInfo;
+            }
 
             vkUpdateDescriptorSets(a_device, 1, &writeDescriptorSet2, 0, NULL);
         }
 
         static void CreateComputePipeline(VkDevice a_device, const VkDescriptorSetLayout &a_dsLayout,
-                VkShaderModule *a_pShaderModule, VkPipeline *a_pPipeline, VkPipelineLayout *a_pPipelineLayout)
+                VkShaderModule *a_pShaderModule, VkPipeline *a_pPipeline, VkPipelineLayout *a_pPipelineLayout, bool a_linear = false)
         {
-            std::vector<uint32_t> code = vk_utils::ReadFile("shaders/comp.spv");
+            std::vector<uint32_t> code = (a_linear) ? vk_utils::ReadFile("shaders/comp_linear.spv") : vk_utils::ReadFile("shaders/comp.spv");
             VkShaderModuleCreateInfo createInfo{};
             createInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
             createInfo.pCode    = code.data();
@@ -424,12 +493,10 @@ class ComputeApplication
             shaderStageCreateInfo.module = (*a_pShaderModule);
             shaderStageCreateInfo.pName  = "main";
 
-            // Allow pass (w,h) inside shader directly from command buffer
-
-            VkPushConstantRange pcRange{}; // #NOTE: we updated this to pass W/H inside shader
+            VkPushConstantRange pcRange{};
             pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             pcRange.offset     = 0;
-            pcRange.size       = 2 * sizeof(int); // #NOTE: (w,h); please add more memory if you need more parameters!
+            pcRange.size       = 2 * sizeof(int);
 
             VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
             pipelineLayoutCreateInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -492,7 +559,7 @@ class ComputeApplication
             return rangeWholeImage;
         }
 
-        static void RecordCommandsOfExecuteAndTransfer(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline,VkPipelineLayout a_layout, const VkDescriptorSet &a_ds, VkImage a_image,
+        static void RecordCommandsOfExecuteAndTransfer(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline,VkPipelineLayout a_layout, const VkDescriptorSet &a_ds,
                 size_t a_bufferSize, VkBuffer a_bufferGPU, VkBuffer a_bufferStaging, int a_w, int a_h)
         {
             VkCommandBufferBeginInfo beginInfo{};
@@ -501,7 +568,6 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
 
             vkCmdFillBuffer(a_cmdBuff, a_bufferStaging, 0, a_bufferSize, 0);
-            // NOTE: clear this buffer just for an example and test cases. if we comment 'vkCmdCopyBuffer', we'll get black image
 
             vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
             vkCmdBindDescriptorSets(a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_layout, 0, 1, &a_ds, 0, NULL);
@@ -511,7 +577,7 @@ class ComputeApplication
 
             vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
 
-            VkBufferMemoryBarrier bufBarr = {};
+            VkBufferMemoryBarrier bufBarr{};
             bufBarr.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
             bufBarr.pNext = nullptr;
             bufBarr.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -542,15 +608,12 @@ class ComputeApplication
 
 
         static void RecordCommandsOfCopyImageDataToTexture(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline, int a_width, int a_height, VkBuffer a_bufferDynamic,
-                VkImage *a_images, VkBuffer a_bufferStaging)
+                VkImage *a_images)
         {
             VkCommandBufferBeginInfo beginInfo{};
             beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
             beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
-
-            vkCmdFillBuffer(a_cmdBuff, a_bufferStaging, 0, a_width * a_height * sizeof(float) * 4, 0);
-            // clear this buffer just for an example and test cases. if we comment 'vkCmdCopyBuffer', we'll get black image
 
             VkImageSubresourceRange rangeWholeImage = WholeImageRange();
 
@@ -591,7 +654,7 @@ class ComputeApplication
 
             vkCmdCopyBufferToImage(a_cmdBuff, a_bufferDynamic, a_images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &wholeRegion);
 
-            VkImageMemoryBarrier imgBar = {};
+            VkImageMemoryBarrier imgBar{};
             {
                 imgBar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
                 imgBar.pNext = nullptr;
@@ -634,7 +697,7 @@ class ComputeApplication
             //vkCmdCopyImageToBuffer(a_cmdBuff, a_images[1], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, a_bufferStaging, 1, &wholeRegion);
 
 
-            VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff)); // end recording commands.
+            VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
         }
 
         static void RunCommandBuffer(VkCommandBuffer a_cmdBuff, VkQueue a_queue, VkDevice a_device)
@@ -677,6 +740,10 @@ class ComputeApplication
             vkFreeMemory   (m_device, m_bufferMemoryGPU, NULL);
             vkDestroyBuffer(m_device, m_bufferGPU, NULL);
 
+            vkFreeMemory   (m_device, m_bufferMemoryTexel, NULL);
+            vkDestroyBuffer(m_device, m_bufferTexel, NULL);
+
+            vkDestroyBufferView(m_device, m_texelBufferView, NULL);
             m_img.Release(m_device);
 
             vkDestroyShaderModule(m_device, m_computeShaderModule, NULL);
@@ -707,44 +774,55 @@ class ComputeApplication
             m_device = vk_utils::CreateLogicalDevice(queueFamilyIndex, m_physicalDevice, m_enabledLayers);
             vkGetDeviceQueue(m_device, queueFamilyIndex, 0, &m_queue);
 
+            std::cout << "\tcreating resources\n";
+            
             int w{}, h{};
             auto imageData{LoadBMP(m_imgPath, &w, &h)};
-            size_t bufferSize{sizeof(Pixel) * w * h};
-
-            std::cout << "\tcreating resources\n";
-            CreateStagingBuffer(  m_device, m_physicalDevice, bufferSize, &m_bufferStaging, &m_bufferMemoryStaging);
-            CreateWriteOnlyBuffer(  m_device, m_physicalDevice, bufferSize, &m_bufferGPU, &m_bufferMemoryGPU);
-
-            // test image filter pipeline here ... temp solution
-
             if (!imageData.size())
             {
                 std::cout << "\tcan't load texture " << m_imgPath << "\n";
                 return;
             }
 
-            m_img = CustomVulkanTexture::Create2DTextureRGBA256(m_device, m_physicalDevice, w, h);
+            size_t bufferSize{sizeof(Pixel) * w * h};
 
+            // OUTPUT BUFFER FOR GPU
+            CreateWriteOnlyBuffer(m_device, m_physicalDevice, bufferSize, &m_bufferGPU, &m_bufferMemoryGPU);
 
-            CreateDescriptorSetLayout(m_device, &m_descriptorSetLayout);
-            // here we will create a binding of bufferStaging to shader via descriptorSet
-            CreateDescriptorSetForOurBufferAndTexture(m_device, m_bufferGPU, bufferSize, &m_descriptorSetLayout, m_img.imageGPU,
-                    &m_descriptorPool, &m_descriptorSet, &m_img.imageSampler, &m_img.imageView);
-            // (device, bufferGPU, bufferSize, descriptorSetLayout) ==>  #NOTE: we write now to 'bufferGPU', not 'bufferStaging'
-            // (descriptorPool, descriptorSet, imageSamplers, imageViews)
+            if (m_linear)
+            {
+                CreateTexelBuffer(m_device, m_physicalDevice, bufferSize, &m_bufferTexel, &m_bufferMemoryTexel);
+                CreateTexelBufferView(m_device, bufferSize, m_bufferTexel, &m_texelBufferView);
+                std::cout << "\ttexel buffer created\n";
+            }
+            else
+            {
+                m_img = CustomVulkanTexture::Create2DTextureRGBA256(m_device, m_physicalDevice, w, h);
+            }
+
+            CreateDescriptorSetLayout(m_device, &m_descriptorSetLayout, m_linear);
+            CreateDescriptorSet(m_device, m_bufferGPU, bufferSize, &m_descriptorSetLayout, m_img.imageGPU, m_bufferTexel, &m_texelBufferView,
+                    &m_descriptorPool, &m_descriptorSet, m_linear);
 
             std::cout << "\tcompiling shaders\n";
-            CreateComputePipeline(m_device, m_descriptorSetLayout,
-                    &m_computeShaderModule, &m_pipeline, &m_pipelineLayout);
+            CreateComputePipeline(m_device, m_descriptorSetLayout, &m_computeShaderModule, &m_pipeline, &m_pipelineLayout, m_linear);
 
             CreateCommandBuffer(m_device, queueFamilyIndex, m_pipeline, m_pipelineLayout, &m_commandPool, &m_commandBuffer);
 
-            // load texture data to GPU
+            // load texture(/linear buffer) data CPU -> GPU
             {
-                CreateDynamicBuffer(m_device, m_physicalDevice, w * h * sizeof(int), &m_bufferDynamic, &m_bufferMemoryDynamic);
-
-                // bufferMemoryDynamic <== imageData.data()
+                // FILL BUFFER TO COPY IT TO TEXTURE OR FILL LINEAR UNIFORM TEXEL BUFFER
+                if (m_linear)
                 {
+                    void *mappedMemory = nullptr;
+                    vkMapMemory(m_device, m_bufferMemoryTexel, 0, w * h * sizeof(int), 0, &mappedMemory);
+                    memcpy(mappedMemory, imageData.data(), w * h * sizeof(int));
+                    vkUnmapMemory(m_device, m_bufferMemoryTexel);
+                }
+                else
+                {
+                    CreateDynamicBuffer(m_device, m_physicalDevice, w * h * sizeof(int), &m_bufferDynamic, &m_bufferMemoryDynamic);
+
                     void *mappedMemory = nullptr;
                     vkMapMemory(m_device, m_bufferMemoryDynamic, 0, w * h * sizeof(int), 0, &mappedMemory);
                     memcpy(mappedMemory, imageData.data(), w * h * sizeof(int));
@@ -752,25 +830,28 @@ class ComputeApplication
                 }
 
                 vkResetCommandBuffer(m_commandBuffer, 0);
-                RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, m_pipeline, w, h, m_bufferDynamic, // bufferDynamic ==> imageGPU
-                        &m_img.imageGPU, m_bufferStaging);
 
-                std::cout << "\tdoing some computations\n";
-                RunCommandBuffer(m_commandBuffer, m_queue, m_device);
+                // BUFFER TO TAKE DATA FROM GPU
+                CreateStagingBuffer(m_device, m_physicalDevice, bufferSize, &m_bufferStaging, &m_bufferMemoryStaging);
+
+                if (!m_linear)
+                {
+                    // DYNAMIC BUFFER => TEXTURE (COPYING)
+                    RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, m_pipeline, w, h, m_bufferDynamic, &m_img.imageGPU);
+                    std::cout << "\tdoing some computations\n";
+                    RunCommandBuffer(m_commandBuffer, m_queue, m_device);
+                }
             }
 
             {
-                RecordCommandsOfExecuteAndTransfer(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, m_img.imageGPU,
+                RecordCommandsOfExecuteAndTransfer(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet,
                         bufferSize, m_bufferGPU, m_bufferStaging, w, h);
-                std::cout << "\tdoing computations\n";
                 RunCommandBuffer(m_commandBuffer, m_queue, m_device);
-                // The former command rendered a mandelbrot set to a bufferStaging.
-                // Save that bufferStaging as a png on disk.
+
+                // Save that bufferStaging as a bmp on disk.
                 std::cout << "\tgeting image back\n";
-                //saveRenderedImageFromDeviceMemory(device, bufferMemoryStaging, 0, w, h);
                 std::vector<uint32_t> resultData(w * h);
-                GetImageFromGPU(m_device, m_bufferMemoryStaging, w, h,
-                        resultData.data());
+                GetImageFromGPU(m_device, m_bufferMemoryStaging, w, h, resultData.data());
 
                 std::cout << "\tsaving image\n";
                 SaveBMP("result.bmp", resultData.data(), w, h);
@@ -876,14 +957,15 @@ int main(int argc, char **argv)
 
     try
     {
-        ComputeApplication app{argv[1]};
+        ComputeApplication app{argv[1], false};
         Timer timer{};
 
         std::cout << "######\nRunning on GPU\n######\n";
         app.RunOnGPU();
+        auto planeGPURunTime{timer.elapsed()};
         std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
             << "Time taken (with copying) "
-            << timer.elapsed()
+            << planeGPURunTime
             << " seconds\n\n"
             << CLEAR_COLOR;
 
@@ -902,6 +984,16 @@ int main(int argc, char **argv)
         app.RunOnCPU(8);
         std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
             << "Time taken: "
+            << timer.elapsed()
+            << " seconds\n\n"
+            << CLEAR_COLOR;
+
+        std::cout << "######\nRunning on GPU (linear texel buffer)\n######\n";
+        ComputeApplication appLinear{argv[1], true};
+        timer.reset();
+        appLinear.RunOnGPU();
+        std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
+            << "Time taken (with copying) "
             << timer.elapsed()
             << " seconds\n\n"
             << CLEAR_COLOR;
