@@ -479,7 +479,7 @@ class ComputeApplication
         static void CreateComputePipeline(VkDevice a_device, const VkDescriptorSetLayout &a_dsLayout,
                 VkShaderModule *a_pShaderModule, VkPipeline *a_pPipeline, VkPipelineLayout *a_pPipelineLayout, bool a_linear = false)
         {
-            std::vector<uint32_t> code = (a_linear) ? vk_utils::ReadFile("shaders/comp_linear.spv") : vk_utils::ReadFile("shaders/comp.spv");
+            std::vector<uint32_t> code = (a_linear) ? vk_utils::ReadFile("shaders/nonlocal.spv") : vk_utils::ReadFile("shaders/nonlocal.spv");
             VkShaderModuleCreateInfo createInfo{};
             createInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
             createInfo.pCode    = code.data();
