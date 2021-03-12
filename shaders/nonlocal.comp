@@ -6,9 +6,10 @@
 
 layout (local_size_x = WORKGROUP_SIZE, local_size_y = WORKGROUP_SIZE, local_size_z = 1 ) in;
 
-struct Pixel
+struct WeightInfo
 {
-    vec4 value;
+    vec4 weightColor;
+    float normWeight;
 };
 
 layout(push_constant) uniform u_params_t
@@ -18,54 +19,45 @@ layout(push_constant) uniform u_params_t
 
 } u_params;
 
-layout(std140, binding = 0) buffer buf
+layout (std140, binding = 0) buffer    buf { WeightInfo nlmData[]; };
+layout (binding = 1) uniform sampler2D u_targetImage;
+layout (binding = 2) uniform sampler2D u_neighbourImage;
+
+void nlmDenoice(ivec2 a_texCoord)
 {
-    Pixel imageData[];
-};
-
-layout (binding = 1) uniform sampler2D u_inputTex;
-
-vec4 nlmDenoice(ivec2 a_texCoord)
-{
-    if ( (a_texCoord.x - PATCH_WINDOW) < 0 
-        || (a_texCoord.y - PATCH_WINDOW) < 0
-        || (a_texCoord.x + PATCH_WINDOW) > u_params.height
-        || (a_texCoord.y + PATCH_WINDOW) > u_params.width)
-    {
-        return texelFetch(u_inputTex, a_texCoord, 0);
-    }
-
     const float filteringParameter = 1.f;
+    const int   stride = 17;
     float normWeight = 0.f;
     vec4 weightColor = vec4(0.);
 
     // Loop through all pixels of an image
-    for (int y = PATCH_WINDOW; y < u_params.height - PATCH_WINDOW; y += 17)
+    for (int y = PATCH_WINDOW; y < u_params.height - PATCH_WINDOW; y += stride)
     {
-        for (int x = PATCH_WINDOW; x < u_params.width - PATCH_WINDOW; x += 17)
+        for (int x = PATCH_WINDOW; x < u_params.width - PATCH_WINDOW; x += stride)
         {
-            vec4  curColor = texelFetch(u_inputTex, ivec2(x, y), 0);
             float colorDistance = 0.0f;
 
             for (int j = - PATCH_WINDOW; j < PATCH_WINDOW; ++j)
             {
                 for (int i = - PATCH_WINDOW; i < PATCH_WINDOW; ++i)
                 {
-                    vec4 texColorPatch = texelFetch(u_inputTex, ivec2(i, j) + a_texCoord, 0);
-                    vec4 curColorPatch = texelFetch(u_inputTex, ivec2(i + x, j + y), 0);
+                    vec4 targetColor    = texelFetch(u_targetImage, ivec2(i, j) + a_texCoord, 0);
+                    vec4 neighbourColor = texelFetch(u_neighbourImage, ivec2(i + x, j + y), 0);
 
-                    colorDistance += pow(texColorPatch.x - curColorPatch.x, 2.f)
-                                + pow(texColorPatch.y - curColorPatch.y, 2.f)
-                                + pow(texColorPatch.z - curColorPatch.z, 2.f);
+                    colorDistance += pow(targetColor.x - neighbourColor.x, 2.f)
+                                + pow(targetColor.y - neighbourColor.y, 2.f)
+                                + pow(targetColor.z - neighbourColor.z, 2.f);
                 }
             }
+
             float weight = exp(- colorDistance / pow(filteringParameter, 2.f));
-            weightColor += curColor * weight;
+            weightColor += texelFetch(u_neighbourImage, ivec2(x, y), 0) * weight;
             normWeight += weight;
         }
     }
 
-    return weightColor / normWeight;
+    nlmData[u_params.width * gl_GlobalInvocationID.y + gl_GlobalInvocationID.x].weightColor = weightColor;
+    nlmData[u_params.width * gl_GlobalInvocationID.y + gl_GlobalInvocationID.x].normWeight  = normWeight;
 }
 
 void main()
@@ -74,5 +66,5 @@ void main()
         return;
 
     ivec2 texCoord = ivec2(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y);
-    imageData[u_params.width * gl_GlobalInvocationID.y + gl_GlobalInvocationID.x].value = nlmDenoice(texCoord);
+    nlmDenoice(texCoord);
 }
