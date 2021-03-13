@@ -32,5 +32,6 @@ void main()
         return;
 
     int coord = int(gl_GlobalInvocationID.y * u_params.width + gl_GlobalInvocationID.x);
+
     imageData[coord].value = nlmData[coord].weightColor / nlmData[coord].normWeight;
 }

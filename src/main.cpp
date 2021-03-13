@@ -167,6 +167,11 @@ class ComputeApplication
             float r, g, b, a;
         };
 
+        struct NLM { //debug
+            Pixel weightedColor;
+            float norm;
+        };
+
         VkInstance                m_instance{};
         VkDebugReportCallbackEXT  m_debugReportCallback{};
         VkPhysicalDevice          m_physicalDevice{};
@@ -179,7 +184,7 @@ class ComputeApplication
         VkDescriptorSet           m_descriptorSet{},       m_descriptorSet2{};
         VkDescriptorSetLayout     m_descriptorSetLayout{}, m_descriptorSetLayout2{};
         VkDescriptorPool          m_descriptorPool{},      m_descriptorPool2{};
-        VkCommandPool             m_commandPool{};
+        VkCommandPool             m_commandPool{},         m_commandPool2{};
         VkBuffer                  m_bufferGPU{};
         VkBuffer                  m_bufferDynamic{};
         VkBuffer                  m_bufferStaging{};
@@ -191,7 +196,7 @@ class ComputeApplication
         bool                      m_nlmFilter{}; // if false then bialteral (default)
         bool                      m_multiframe{}; // works only with nlm
         CustomVulkanTexture       m_targetImage{};
-        CustomVulkanTexture       m_neihbourImage{};
+        CustomVulkanTexture       m_neighbourImage{};
 
         std::vector<const char *> m_enabledLayers{};
 
@@ -831,8 +836,73 @@ class ComputeApplication
             VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
         }
 
+        static void RecordCommandsOfExecuteNLM(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline,VkPipelineLayout a_layout, const VkDescriptorSet &a_ds,
+                int a_w, int a_h)
+        {
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
 
-        static void RecordCommandsOfCopyImageDataToTexture(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline, int a_width, int a_height, VkBuffer a_bufferDynamic,
+            vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
+            vkCmdBindDescriptorSets(a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_layout, 0, 1, &a_ds, 0, NULL);
+
+            int wh[2]{ a_w, a_h };
+            vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
+
+            vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
+
+            VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
+        }
+
+        static void RecordCommandsOfTransferNLM(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline,VkPipelineLayout a_layout, const VkDescriptorSet &a_ds,
+                size_t a_bufferSize, VkBuffer a_bufferGPU, VkBuffer a_bufferStaging, int a_w, int a_h)
+        {
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
+
+            vkCmdFillBuffer(a_cmdBuff, a_bufferStaging, 0, a_bufferSize, 0);
+
+            vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
+            vkCmdBindDescriptorSets(a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_layout, 0, 1, &a_ds, 0, NULL);
+
+            int wh[2]{ a_w, a_h };
+            vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
+
+            vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
+
+            VkBufferMemoryBarrier bufBarr{};
+            bufBarr.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            bufBarr.pNext = nullptr;
+            bufBarr.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bufBarr.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bufBarr.size                = VK_WHOLE_SIZE;
+            bufBarr.offset              = 0;
+            bufBarr.buffer              = a_bufferGPU;
+            bufBarr.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+            bufBarr.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+
+            vkCmdPipelineBarrier(a_cmdBuff,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0,
+                    0, nullptr,
+                    1, &bufBarr,
+                    0, nullptr);
+
+            VkBufferCopy copyInfo{};
+            copyInfo.dstOffset = 0;
+            copyInfo.srcOffset = 0;
+            copyInfo.size      = a_bufferSize;
+
+            vkCmdCopyBuffer(a_cmdBuff, a_bufferGPU, a_bufferStaging, 1, &copyInfo);
+
+            VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
+        }
+
+        static void RecordCommandsOfCopyImageDataToTexture(VkCommandBuffer a_cmdBuff, int a_width, int a_height, VkBuffer a_bufferDynamic,
                 VkImage *a_images)
         {
             VkCommandBufferBeginInfo beginInfo{};
@@ -1020,7 +1090,7 @@ class ComputeApplication
 
             // Delete images
             m_targetImage.release();
-            m_neihbourImage.release();
+            m_neighbourImage.release();
 
             // Delete shader related resourses
             {
@@ -1091,6 +1161,12 @@ class ComputeApplication
                 m_commandPool = VK_NULL_HANDLE;
             }
 
+            if (m_commandPool2 != VK_NULL_HANDLE)
+            {
+                vkDestroyCommandPool(m_device, m_commandPool2, NULL);
+                m_commandPool2 = VK_NULL_HANDLE;
+            }
+
             if (m_device != VK_NULL_HANDLE)
             {
                 vkDestroyDevice(m_device, NULL);
@@ -1134,7 +1210,7 @@ class ComputeApplication
             //----------------------------------------------------------------------------------------------------------------------
 
             using image_t = std::vector<unsigned int>;
-            const int framesToUse{(multiframe) ? 2 : 1};
+            const int framesToUse{(multiframe) ? 10 : 1};
 
             int w{}, h{};
             std::vector<image_t> imageData{};
@@ -1179,7 +1255,7 @@ class ComputeApplication
                 if (m_nlmFilter)
                 {
                     // for image #k [0..framesToUse]
-                    m_neihbourImage.create(m_device, m_physicalDevice, w, h);
+                    m_neighbourImage.create(m_device, m_physicalDevice, w, h);
                 }
                 std::cout << "\t\tnon-linear buffer created\n";
             }
@@ -1201,7 +1277,7 @@ class ComputeApplication
                 // DS for recording weighted pixels for result image
                 CreateDescriptorSetLayoutNLM(m_device, &m_descriptorSetLayout, m_linear, false);
                 CreateDescriptorSetNLM(m_device, m_bufferNLM, bufferSizeNLM, &m_descriptorSetLayout,
-                        m_targetImage, m_neihbourImage, &m_descriptorPool, &m_descriptorSet);
+                        m_targetImage, m_neighbourImage, &m_descriptorPool, &m_descriptorSet);
 
                 // DS for building result image (by normalizing)
                 CreateDescriptorSetLayoutNLM(m_device, &m_descriptorSetLayout2, m_linear, true);
@@ -1253,7 +1329,7 @@ class ComputeApplication
             {
                 // DYNAMIC BUFFER => TEXTURE (COPYING)
                 vkResetCommandBuffer(m_commandBuffer, 0);
-                RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, m_pipeline, w, h, m_bufferDynamic, m_targetImage.getpImage());
+                RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_targetImage.getpImage());
                 std::cout << "\t\t feeding 1st texture our target image\n";
                 RunCommandBuffer(m_commandBuffer, m_queue, m_device);
             }
@@ -1267,29 +1343,49 @@ class ComputeApplication
 
             if (m_nlmFilter)
             {
-                /*
-                   for (int ii{0}; ii < framesToUse; ++ii)
-                   {
-                //TODO: load images to buffer here
-                LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryDynamic, false);
+                for (int ii{0}; ii < framesToUse; ++ii)
+                {
+                    std::cout << "\t\t loading image #" << ii << " data\n";
+                    LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
 
-                vkResetCommandBuffer(m_commandBuffer, 0);
-                vkResetCommandBuffer(m_commandBuffer2, 0);
+                    // DYNAMIC BUFFER => TEXTURE (COPYING)
+                    vkResetCommandBuffer(m_commandBuffer, 0);
+                    RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage());
+                    std::cout << "\t\t feeding #" << ii << "texture our neighbour image\n";
+                    RunCommandBuffer(m_commandBuffer, m_queue, m_device);
 
-                // DYNAMIC BUFFER => TEXTURE (COPYING)
-                RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, m_pipeline, w, h, m_bufferDynamic, &m_targetImage.getImage());
-                std::cout << "\tdoing some computations\n";
-                RunCommandBuffer(m_commandBuffer, m_queue, m_device);
+                    vkResetCommandBuffer(m_commandBuffer, 0);
+                    RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h);
+                    RunCommandBuffer(m_commandBuffer, m_queue, m_device);
 
-                RecordCommandsOfExecuteAndTransfer(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet,
-                bufferSize, m_bufferGPU, m_bufferStaging, w, h);
-                RunCommandBuffer(m_commandBuffer, m_queue, m_device);
+                    {
+                        void *data;
+                        vkMapMemory(m_device, m_bufferMemoryNLM, 0, VK_WHOLE_SIZE, 0, &data);
+                        NLM *nlmData = (NLM *)data;
+
+                        const int step{100};
+                        for (int y{}; y < h; y += step)
+                        {
+                            for (int x{}; x < w; x += step)
+                            {
+                                std::cout << "( " << x << "; " << y << ") <=>"
+                                    << " r: " << nlmData[y * w + x].weightedColor.r
+                                    << " g: " << nlmData[y * w + x].weightedColor.g
+                                    << " b: " << nlmData[y * w + x].weightedColor.b
+                                    << " a: " << nlmData[y * w + x].weightedColor.a
+                                    << " /: " << nlmData[y * w + x].norm << "\n";
+                            }
+                        }
+                        vkUnmapMemory(m_device, m_bufferMemoryNLM);
+                    }
                 }
 
-                // generate result image
                 CreateCommandBuffer(m_device, queueFamilyIndex, m_pipeline2, m_pipelineLayout2, &m_commandPool2, &m_commandBuffer2);
-                CreateDynamicBuffer(m_device, m_physicalDevice, w * h * sizeof(int), &m_bufferDynamic2, &m_bufferMemoryDynamic2);
-                */
+                vkResetCommandBuffer(m_commandBuffer2, 0);
+
+                RecordCommandsOfTransferNLM(m_commandBuffer2, m_pipeline2, m_pipelineLayout2, m_descriptorSet2,
+                        bufferSize, m_bufferGPU, m_bufferStaging, w, h);
+                RunCommandBuffer(m_commandBuffer2, m_queue, m_device);
             }
             else
             {
@@ -1305,11 +1401,13 @@ class ComputeApplication
             std::vector<uint32_t> resultData(w * h);
             GetImageFromGPU(m_device, m_bufferMemoryStaging, w, h, resultData.data());
 
-            std::cout << "\tsaving image\n";
+            std::cout << "\t\tsaving image\n";
             SaveBMP("result.bmp", resultData.data(), w, h);
             resultData = std::vector<uint32_t>();
 
-            std::cout << "\tdestroying all\n";
+            //----------------------------------------------------------------------------------------------------------------------
+            std::cout << "\tcleaning up\n";
+            //----------------------------------------------------------------------------------------------------------------------
             Cleanup();
         }
 
@@ -1406,17 +1504,17 @@ int main(int argc, char **argv)
         ComputeApplication app{};
 
         /*
-        std::cout << "######\nRunning on GPU (nonlinear bialteral)\n######\n";
-        app.RunOnGPU(
-                false, // NLM filter (bialteral => false)
-                true,  // store image in nonlinear texture
-                false  // multiframe (not supported for bialteral => should be false)
-                );
-        std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
-            << "Time taken (with copying) "
-            << timer.elapsed()
-            << " seconds\n\n"
-            << CLEAR_COLOR;
+           std::cout << "######\nRunning on GPU (nonlinear bialteral)\n######\n";
+           app.RunOnGPU(
+           false, // NLM filter (bialteral => false)
+           true,  // store image in nonlinear texture
+           false  // multiframe (not supported for bialteral => should be false)
+           );
+           std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
+           << "Time taken (with copying) "
+           << timer.elapsed()
+           << " seconds\n\n"
+           << CLEAR_COLOR;
 
            std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
            timer.reset();
@@ -1445,39 +1543,39 @@ int main(int argc, char **argv)
             << " seconds\n\n"
             << CLEAR_COLOR;
 
-        std::cout << "######\nRunning on GPU (multiframe nonlocal)\n######\n";
-        timer.reset();
-        app.RunOnGPU(
-                true,  // NLM filter (bialteral => false)
-                true,  // store image in nonlinear texture
-                true   // multiframe (not supported for bialteral => should be false)
-                );
-        std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
-            << "Time taken (with copying) "
-            << timer.elapsed()
-            << " seconds\n\n"
-            << CLEAR_COLOR;
-
         /*
-            std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
-        timer.reset();
-        app.RunOnCPU(1);
-        std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
-            << "Time taken: "
-            << timer.elapsed()
-            << " seconds\n\n"
-            << CLEAR_COLOR;
+           std::cout << "######\nRunning on GPU (multiframe nonlocal)\n######\n";
+           timer.reset();
+           app.RunOnGPU(
+           true,  // NLM filter (bialteral => false)
+           true,  // store image in nonlinear texture
+           true   // multiframe (not supported for bialteral => should be false)
+           );
+           std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
+           << "Time taken (with copying) "
+           << timer.elapsed()
+           << " seconds\n\n"
+           << CLEAR_COLOR;
+
+           std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
+           timer.reset();
+           app.RunOnCPU(1);
+           std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
+           << "Time taken: "
+           << timer.elapsed()
+           << " seconds\n\n"
+           << CLEAR_COLOR;
 
 
-        std::cout << "######\nRunning on CPU (8 threads bialteral)\n######\n";
-        timer.reset();
-        app.RunOnCPU(8);
-        std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
-            << "Time taken: "
-            << timer.elapsed()
-            << " seconds\n\n"
-            << CLEAR_COLOR;
-            */
+           std::cout << "######\nRunning on CPU (8 threads bialteral)\n######\n";
+           timer.reset();
+           app.RunOnCPU(8);
+           std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
+           << "Time taken: "
+           << timer.elapsed()
+           << " seconds\n\n"
+           << CLEAR_COLOR;
+           */
     }
     catch (const std::runtime_error& e)
     {
