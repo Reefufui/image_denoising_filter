@@ -66,6 +66,7 @@ class CustomVulkanTexture
 
         VkDeviceMemory getDeviceMemory() { return m_imagesMemoryGPU; }
         VkImage        getImage()        { return m_imageGPU; }
+        VkImage*       getpImage()       { return &m_imageGPU; }
         VkSampler      getSampler()      { return m_imageSampler; }
         VkImageView    getImageView()    { return m_imageView; }
 
@@ -173,19 +174,18 @@ class ComputeApplication
         VkPipeline                m_pipeline{},            m_pipeline2{};
         VkPipelineLayout          m_pipelineLayout{},      m_pipelineLayout2{};
         VkShaderModule            m_computeShaderModule{}, m_computeShaderModule2{};
-        VkCommandPool             m_commandPool{},         m_commandPool2{};
         VkCommandBuffer           m_commandBuffer{},       m_commandBuffer2{};
         VkQueue                   m_queue{},               m_queue2{};
-        VkDescriptorPool          m_descriptorPool{},      m_descriptorPool2{};
         VkDescriptorSet           m_descriptorSet{},       m_descriptorSet2{};
         VkDescriptorSetLayout     m_descriptorSetLayout{}, m_descriptorSetLayout2{};
-        VkBuffer                  m_bufferDynamic{},       m_bufferDynamic2{};
-        VkDeviceMemory            m_bufferMemoryDynamic{}, m_bufferMemoryDynamic2{};
+        VkDescriptorPool          m_descriptorPool{},      m_descriptorPool2{};
+        VkCommandPool             m_commandPool{};
         VkBuffer                  m_bufferGPU{};
+        VkBuffer                  m_bufferDynamic{};
         VkBuffer                  m_bufferStaging{};
         VkBuffer                  m_bufferTexel{};
         VkBuffer                  m_bufferNLM{};
-        VkDeviceMemory            m_bufferMemoryGPU{}, m_bufferMemoryStaging{}, m_bufferMemoryTexel{}, m_bufferMemoryNLM{};
+        VkDeviceMemory            m_bufferMemoryGPU{}, m_bufferMemoryStaging{}, m_bufferMemoryTexel{}, m_bufferMemoryNLM{}, m_bufferMemoryDynamic{};
         VkBufferView              m_texelBufferView{};
         bool                      m_linear{};
         bool                      m_nlmFilter{}; // if false then bialteral (default)
@@ -787,128 +787,125 @@ class ComputeApplication
         static void RecordCommandsOfExecuteAndTransfer(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline,VkPipelineLayout a_layout, const VkDescriptorSet &a_ds,
                 size_t a_bufferSize, VkBuffer a_bufferGPU, VkBuffer a_bufferStaging, int a_w, int a_h)
         {
-            /*
-               VkCommandBufferBeginInfo beginInfo{};
-               beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-               beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-               VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
 
-               vkCmdFillBuffer(a_cmdBuff, a_bufferStaging, 0, a_bufferSize, 0);
+            vkCmdFillBuffer(a_cmdBuff, a_bufferStaging, 0, a_bufferSize, 0);
 
-               vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
-               vkCmdBindDescriptorSets(a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_layout, 0, 1, &a_ds, 0, NULL);
+            vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
+            vkCmdBindDescriptorSets(a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_layout, 0, 1, &a_ds, 0, NULL);
 
-               int wh[2]{ a_w, a_h };
-               vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
+            int wh[2]{ a_w, a_h };
+            vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
 
-               vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
+            vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
 
-               VkBufferMemoryBarrier bufBarr{};
-               bufBarr.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-               bufBarr.pNext = nullptr;
-               bufBarr.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-               bufBarr.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-               bufBarr.size                = VK_WHOLE_SIZE;
-               bufBarr.offset              = 0;
-               bufBarr.buffer              = a_bufferGPU;
-               bufBarr.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-               bufBarr.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+            VkBufferMemoryBarrier bufBarr{};
+            bufBarr.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            bufBarr.pNext = nullptr;
+            bufBarr.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bufBarr.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            bufBarr.size                = VK_WHOLE_SIZE;
+            bufBarr.offset              = 0;
+            bufBarr.buffer              = a_bufferGPU;
+            bufBarr.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+            bufBarr.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
 
-               vkCmdPipelineBarrier(a_cmdBuff,
-               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-               VK_PIPELINE_STAGE_TRANSFER_BIT,
-               0,
-               0, nullptr,
-               1, &bufBarr,
-               0, nullptr);
+            vkCmdPipelineBarrier(a_cmdBuff,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0,
+                    0, nullptr,
+                    1, &bufBarr,
+                    0, nullptr);
 
-               VkBufferCopy copyInfo{};
-               copyInfo.dstOffset = 0;
-               copyInfo.srcOffset = 0;
-               copyInfo.size      = a_bufferSize;
+            VkBufferCopy copyInfo{};
+            copyInfo.dstOffset = 0;
+            copyInfo.srcOffset = 0;
+            copyInfo.size      = a_bufferSize;
 
-               vkCmdCopyBuffer(a_cmdBuff, a_bufferGPU, a_bufferStaging, 1, &copyInfo);
+            vkCmdCopyBuffer(a_cmdBuff, a_bufferGPU, a_bufferStaging, 1, &copyInfo);
 
-               VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
-               */
+            VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
         }
 
 
         static void RecordCommandsOfCopyImageDataToTexture(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline, int a_width, int a_height, VkBuffer a_bufferDynamic,
                 VkImage *a_images)
         {
-            /*
-               VkCommandBufferBeginInfo beginInfo{};
-               beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-               beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-               VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
 
-               VkImageSubresourceRange rangeWholeImage = WholeImageRange();
+            VkImageSubresourceRange rangeWholeImage = WholeImageRange();
 
-               VkImageSubresourceLayers shittylayers{};
-               shittylayers.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-               shittylayers.mipLevel       = 0;
-               shittylayers.baseArrayLayer = 0;
-               shittylayers.layerCount     = 1;
+            VkImageSubresourceLayers shittylayers{};
+            shittylayers.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+            shittylayers.mipLevel       = 0;
+            shittylayers.baseArrayLayer = 0;
+            shittylayers.layerCount     = 1;
 
-               VkBufferImageCopy wholeRegion = {};
-               wholeRegion.bufferOffset      = 0;
-               wholeRegion.bufferRowLength   = uint32_t(a_width);
-               wholeRegion.bufferImageHeight = uint32_t(a_height);
-               wholeRegion.imageExtent       = VkExtent3D{uint32_t(a_width), uint32_t(a_height), 1};
-               wholeRegion.imageOffset       = VkOffset3D{0,0,0};
-               wholeRegion.imageSubresource  = shittylayers;
+            VkBufferImageCopy wholeRegion = {};
+            wholeRegion.bufferOffset      = 0;
+            wholeRegion.bufferRowLength   = uint32_t(a_width);
+            wholeRegion.bufferImageHeight = uint32_t(a_height);
+            wholeRegion.imageExtent       = VkExtent3D{uint32_t(a_width), uint32_t(a_height), 1};
+            wholeRegion.imageOffset       = VkOffset3D{0,0,0};
+            wholeRegion.imageSubresource  = shittylayers;
 
-               VkImageMemoryBarrier moveToGeneralBar = imBarTransfer(a_images[0],
-               rangeWholeImage,
-               VK_IMAGE_LAYOUT_UNDEFINED,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VkImageMemoryBarrier moveToGeneralBar = imBarTransfer(a_images[0],
+                    rangeWholeImage,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-               vkCmdPipelineBarrier(a_cmdBuff,
-               VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-               VK_PIPELINE_STAGE_TRANSFER_BIT,
-               0,
-               0, nullptr,            // general memory barriers
-               0, nullptr,            // buffer barriers
-               1, &moveToGeneralBar); // image  barriers
+            vkCmdPipelineBarrier(a_cmdBuff,
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0,
+                    0, nullptr,            // general memory barriers
+                    0, nullptr,            // buffer barriers
+                    1, &moveToGeneralBar); // image  barriers
 
-               VkClearColorValue clearVal = {};
-               clearVal.float32[0] = 1.0f;
-               clearVal.float32[1] = 1.0f;
-               clearVal.float32[2] = 1.0f;
-               clearVal.float32[3] = 1.0f;
+            VkClearColorValue clearVal = {};
+            clearVal.float32[0] = 1.0f;
+            clearVal.float32[1] = 1.0f;
+            clearVal.float32[2] = 1.0f;
+            clearVal.float32[3] = 1.0f;
 
-               vkCmdClearColorImage(a_cmdBuff, a_images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearVal, 1, &rangeWholeImage);
+            vkCmdClearColorImage(a_cmdBuff, a_images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearVal, 1, &rangeWholeImage);
 
-               vkCmdCopyBufferToImage(a_cmdBuff, a_bufferDynamic, a_images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &wholeRegion);
+            vkCmdCopyBufferToImage(a_cmdBuff, a_bufferDynamic, a_images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &wholeRegion);
 
-               VkImageMemoryBarrier imgBar{};
-               {
-               imgBar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-               imgBar.pNext = nullptr;
-               imgBar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-               imgBar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            VkImageMemoryBarrier imgBar{};
+            {
+                imgBar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                imgBar.pNext = nullptr;
+                imgBar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                imgBar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
-               imgBar.srcAccessMask       = 0;
-               imgBar.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
-               imgBar.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-               imgBar.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-               imgBar.image               = a_images[0];
+                imgBar.srcAccessMask       = 0;
+                imgBar.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+                imgBar.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                imgBar.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                imgBar.image               = a_images[0];
 
-               imgBar.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-               imgBar.subresourceRange.baseMipLevel   = 0;
-               imgBar.subresourceRange.levelCount     = 1;
-               imgBar.subresourceRange.baseArrayLayer = 0;
-               imgBar.subresourceRange.layerCount     = 1;
-               };
+                imgBar.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+                imgBar.subresourceRange.baseMipLevel   = 0;
+                imgBar.subresourceRange.levelCount     = 1;
+                imgBar.subresourceRange.baseArrayLayer = 0;
+                imgBar.subresourceRange.layerCount     = 1;
+            };
 
-               vkCmdPipelineBarrier(a_cmdBuff,
-               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-               0,
-               0, nullptr,
-               0, nullptr,
-            1, &imgBar);
+            vkCmdPipelineBarrier(a_cmdBuff,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0,
+                    0, nullptr,
+                    0, nullptr,
+                    1, &imgBar);
 
             //VkImageMemoryBarrier barForCopy[2];
             //barForCopy[0] = imBarTransfer(a_images[0], rangeWholeImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -926,7 +923,6 @@ class ComputeApplication
 
 
             VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
-            */
         }
 
         static void RunCommandBuffer(VkCommandBuffer a_cmdBuff, VkQueue a_queue, VkDevice a_device)
@@ -959,8 +955,8 @@ class ComputeApplication
             }
             else
             {
-                vkMapMemory(a_device, a_bufferMemoryDynamic, 0, w * h * sizeof(int), 0, &mappedMemory);
-                memcpy(mappedMemory, a_imageData.data(), w * h * sizeof(int));
+                vkMapMemory(a_device, a_bufferMemoryDynamic, 0, a_w * a_h * sizeof(int), 0, &mappedMemory);
+                memcpy(mappedMemory, a_imageData.data(), a_w * a_h * sizeof(int));
                 vkUnmapMemory(a_device, a_bufferMemoryDynamic);
             }
         }
@@ -1095,12 +1091,6 @@ class ComputeApplication
                 m_commandPool = VK_NULL_HANDLE;
             }
 
-            if (m_commandPool2 != VK_NULL_HANDLE)
-            {
-                vkDestroyCommandPool(m_device, m_commandPool2, NULL);
-                m_commandPool2 = VK_NULL_HANDLE;
-            }
-
             if (m_device != VK_NULL_HANDLE)
             {
                 vkDestroyDevice(m_device, NULL);
@@ -1139,7 +1129,9 @@ class ComputeApplication
             m_device = vk_utils::CreateLogicalDevice(queueFamilyIndex, m_physicalDevice, m_enabledLayers);
             vkGetDeviceQueue(m_device, queueFamilyIndex, 0, &m_queue);
 
-            std::cout << "\tcreating resources\n";
+            //----------------------------------------------------------------------------------------------------------------------
+            std::cout << "\tloading image data\n";
+            //----------------------------------------------------------------------------------------------------------------------
 
             using image_t = std::vector<unsigned int>;
             const int framesToUse{(multiframe) ? 2 : 1};
@@ -1169,32 +1161,43 @@ class ComputeApplication
             size_t bufferSize{sizeof(Pixel) * w * h};
             size_t bufferSizeNLM{(sizeof(Pixel) + sizeof(float)) * w * h};
 
-            // INPUT BUFFER/IMAGE FOR SHADERS
+            //----------------------------------------------------------------------------------------------------------------------
+            std::cout << "\tcreating io buffers/images of our shaders\n";
+            //----------------------------------------------------------------------------------------------------------------------
+
+            // NOTE: INPUT BUFFER/IMAGE FOR SHADERS
             if (m_linear)
             {
-                // TODO: Linear implementation for NLM filter
                 CreateTexelBuffer(m_device, m_physicalDevice, bufferSize, &m_bufferTexel, &m_bufferMemoryTexel);
                 CreateTexelBufferView(m_device, bufferSize, m_bufferTexel, &m_texelBufferView);
-                std::cout << "\ttexel buffer created\n";
+                std::cout << "\t\tlinear buffer created\n";
             }
             else
             {
+                // for image #0
                 m_targetImage.create(m_device, m_physicalDevice, w, h);
                 if (m_nlmFilter)
                 {
+                    // for image #k [0..framesToUse]
                     m_neihbourImage.create(m_device, m_physicalDevice, w, h);
                 }
-                std::cout << "\ttextures created\n";
+                std::cout << "\t\tnon-linear buffer created\n";
             }
-
-            // OUTPUT BUFFER FOR GPU (device local) [for result image]
-            CreateWriteOnlyBuffer(m_device, m_physicalDevice, bufferSize, &m_bufferGPU, &m_bufferMemoryGPU);
 
             if (m_nlmFilter)
             {
-                // if multiframe is present than several kernels will record NLM weighted pixels here
                 CreateNLMWeightBuffer(m_device, m_physicalDevice, w, h, &m_bufferNLM, &m_bufferMemoryNLM);
+            }
 
+            // NOTE: OUTPUT BUFFER FOR GPU (device local) [for result image]
+            CreateWriteOnlyBuffer(m_device, m_physicalDevice, bufferSize, &m_bufferGPU, &m_bufferMemoryGPU);
+
+            //----------------------------------------------------------------------------------------------------------------------
+            std::cout << "\tcreating descriptor sets for created resourses\n";
+            //----------------------------------------------------------------------------------------------------------------------
+
+            if (m_nlmFilter)
+            {
                 // DS for recording weighted pixels for result image
                 CreateDescriptorSetLayoutNLM(m_device, &m_descriptorSetLayout, m_linear, false);
                 CreateDescriptorSetNLM(m_device, m_bufferNLM, bufferSizeNLM, &m_descriptorSetLayout,
@@ -1204,6 +1207,8 @@ class ComputeApplication
                 CreateDescriptorSetLayoutNLM(m_device, &m_descriptorSetLayout2, m_linear, true);
                 CreateDescriptorSetNLM2(m_device, m_bufferGPU, bufferSize, &m_descriptorSetLayout2,
                         m_bufferNLM, bufferSizeNLM, &m_descriptorPool2, &m_descriptorSet2);
+
+                // we have two sepparate descriptor pools for two DS for our NLM calculating and image building shaders
             }
             else
             {
@@ -1213,61 +1218,90 @@ class ComputeApplication
                         &m_descriptorPool, &m_descriptorSet, m_linear);
             }
 
+            //----------------------------------------------------------------------------------------------------------------------
             std::cout << "\tcompiling shaders\n";
+            //----------------------------------------------------------------------------------------------------------------------
 
-            if (!m_nlmFilter)
-            {
-                CreateComputePipelines(m_device, m_descriptorSetLayout, &m_computeShaderModule, &m_pipeline, &m_pipelineLayout,
-                        (m_linear) ? "shaders/bialteral_linear.spv" : "shaders/bialteral.spv");
-            }
-            else
+            if (m_nlmFilter)
             {
                 CreateComputePipelines(m_device, m_descriptorSetLayout, &m_computeShaderModule, &m_pipeline, &m_pipelineLayout,
                         "shaders/nonlocal.spv" );
                 CreateComputePipelines(m_device, m_descriptorSetLayout2, &m_computeShaderModule2, &m_pipeline2, &m_pipelineLayout2,
                         "shaders/nonlocal_generate.spv" );
             }
+            else
+            {
+                CreateComputePipelines(m_device, m_descriptorSetLayout, &m_computeShaderModule, &m_pipeline, &m_pipelineLayout,
+                        (m_linear) ? "shaders/bialteral_linear.spv" : "shaders/bialteral.spv");
+            }
+
+            //----------------------------------------------------------------------------------------------------------------------
+            std::cout << "\tcreating command buffer and load image #0 data to texture\n";
+            //----------------------------------------------------------------------------------------------------------------------
 
             CreateCommandBuffer(m_device, queueFamilyIndex, m_pipeline, m_pipelineLayout, &m_commandPool, &m_commandBuffer);
-            CreateDynamicBuffer(m_device, m_physicalDevice, w * h * sizeof(int), &m_bufferDynamic, &m_bufferMemoryDynamic);
 
-            if (m_nlmFilter)
+            if (!m_linear)
             {
-                CreateCommandBuffer(m_device, queueFamilyIndex, m_pipeline2, m_pipelineLayout2, &m_commandPool2, &m_commandBuffer2);
-                CreateDynamicBuffer(m_device, m_physicalDevice, w * h * sizeof(int), &m_bufferDynamic2, &m_bufferMemoryDynamic2);
+                // we feed our textures this buffer's data
+                CreateDynamicBuffer(m_device, m_physicalDevice, w * h * sizeof(int), &m_bufferDynamic, &m_bufferMemoryDynamic);
             }
 
             LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, m_linear);
 
+            if (!m_linear)
+            {
+                // DYNAMIC BUFFER => TEXTURE (COPYING)
+                vkResetCommandBuffer(m_commandBuffer, 0);
+                RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, m_pipeline, w, h, m_bufferDynamic, m_targetImage.getpImage());
+                std::cout << "\t\t feeding 1st texture our target image\n";
+                RunCommandBuffer(m_commandBuffer, m_queue, m_device);
+            }
+
+            //----------------------------------------------------------------------------------------------------------------------
+            std::cout << "\tperforming computations\n";
+            //----------------------------------------------------------------------------------------------------------------------
+
             // BUFFER TO TAKE DATA FROM GPU
             CreateStagingBuffer(m_device, m_physicalDevice, bufferSize, &m_bufferStaging, &m_bufferMemoryStaging);
 
-            for (int ii{0}; ii < framesToUse; ++ii)
+            if (m_nlmFilter)
             {
+                /*
+                   for (int ii{0}; ii < framesToUse; ++ii)
+                   {
                 //TODO: load images to buffer here
-                if (m_nlmFilter)
-                {
-                    LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic2, m_linear);
-                }
+                LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryDynamic, false);
 
                 vkResetCommandBuffer(m_commandBuffer, 0);
                 vkResetCommandBuffer(m_commandBuffer2, 0);
 
-                if (!m_linear)
-                {
-                    // DYNAMIC BUFFER => TEXTURE (COPYING)
-                    RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, m_pipeline, w, h, m_bufferDynamic, &m_textures[0].imageGPU);
-                    std::cout << "\tdoing some computations\n";
-                    RunCommandBuffer(m_commandBuffer, m_queue, m_device);
+                // DYNAMIC BUFFER => TEXTURE (COPYING)
+                RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, m_pipeline, w, h, m_bufferDynamic, &m_targetImage.getImage());
+                std::cout << "\tdoing some computations\n";
+                RunCommandBuffer(m_commandBuffer, m_queue, m_device);
+
+                RecordCommandsOfExecuteAndTransfer(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet,
+                bufferSize, m_bufferGPU, m_bufferStaging, w, h);
+                RunCommandBuffer(m_commandBuffer, m_queue, m_device);
                 }
 
+                // generate result image
+                CreateCommandBuffer(m_device, queueFamilyIndex, m_pipeline2, m_pipelineLayout2, &m_commandPool2, &m_commandBuffer2);
+                CreateDynamicBuffer(m_device, m_physicalDevice, w * h * sizeof(int), &m_bufferDynamic2, &m_bufferMemoryDynamic2);
+                */
+            }
+            else
+            {
                 RecordCommandsOfExecuteAndTransfer(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet,
                         bufferSize, m_bufferGPU, m_bufferStaging, w, h);
                 RunCommandBuffer(m_commandBuffer, m_queue, m_device);
             }
 
-            // Save that bufferStaging as a bmp on disk.
-            std::cout << "\tgeting image back\n";
+            //----------------------------------------------------------------------------------------------------------------------
+            std::cout << "\tgetting image back\n";
+            //----------------------------------------------------------------------------------------------------------------------
+
             std::vector<uint32_t> resultData(w * h);
             GetImageFromGPU(m_device, m_bufferMemoryStaging, w, h, resultData.data());
 
@@ -1371,6 +1405,7 @@ int main(int argc, char **argv)
         Timer timer{};
         ComputeApplication app{};
 
+        /*
         std::cout << "######\nRunning on GPU (nonlinear bialteral)\n######\n";
         app.RunOnGPU(
                 false, // NLM filter (bialteral => false)
@@ -1383,19 +1418,19 @@ int main(int argc, char **argv)
             << " seconds\n\n"
             << CLEAR_COLOR;
 
-        std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
-        timer.reset();
-        app.RunOnGPU(
-                false, // NLM filter (bialteral => false)
-                false, // store image in nonlinear texture
-                false  // multiframe (not supported for bialteral => should be false)
-                );
-        std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
-            << "Time taken (with copying) "
-            << timer.elapsed()
-            << " seconds\n\n"
-            << CLEAR_COLOR;
-
+           std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
+           timer.reset();
+           app.RunOnGPU(
+           false, // NLM filter (bialteral => false)
+           false, // store image in nonlinear texture
+           false  // multiframe (not supported for bialteral => should be false)
+           );
+           std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
+           << "Time taken (with copying) "
+           << timer.elapsed()
+           << " seconds\n\n"
+           << CLEAR_COLOR;
+           */
 
         std::cout << "######\nRunning on GPU (nonlocal)\n######\n";
         timer.reset();
@@ -1410,22 +1445,21 @@ int main(int argc, char **argv)
             << " seconds\n\n"
             << CLEAR_COLOR;
 
-        /*
-           std::cout << "######\nRunning on GPU (multiframe nonlocal)\n######\n";
-           timer.reset();
-           app.RunOnGPU(
-           true,  // NLM filter (bialteral => false)
-           true,  // store image in nonlinear texture
-           true   // multiframe (not supported for bialteral => should be false)
-           );
-           std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
-           << "Time taken (with copying) "
-           << timer.elapsed()
-           << " seconds\n\n"
-           << CLEAR_COLOR;
-           */
+        std::cout << "######\nRunning on GPU (multiframe nonlocal)\n######\n";
+        timer.reset();
+        app.RunOnGPU(
+                true,  // NLM filter (bialteral => false)
+                true,  // store image in nonlinear texture
+                true   // multiframe (not supported for bialteral => should be false)
+                );
+        std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
+            << "Time taken (with copying) "
+            << timer.elapsed()
+            << " seconds\n\n"
+            << CLEAR_COLOR;
 
-        std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
+        /*
+            std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
         timer.reset();
         app.RunOnCPU(1);
         std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR
@@ -1443,7 +1477,7 @@ int main(int argc, char **argv)
             << timer.elapsed()
             << " seconds\n\n"
             << CLEAR_COLOR;
-
+            */
     }
     catch (const std::runtime_error& e)
     {
