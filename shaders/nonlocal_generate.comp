@@ -23,8 +23,8 @@ layout(push_constant) uniform u_params_t
 
 } u_params;
 
-layout (std140, binding = 0) buffer buf { Pixel imageData[]; };
-layout (std140, binding = 1) buffer buf2 { WeightInfo nlmData[]; };
+layout (binding = 0) buffer buf { Pixel imageData[]; };
+layout (binding = 1) buffer buf2 { WeightInfo nlmData[]; };
 
 void main()
 {

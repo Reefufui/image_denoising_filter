@@ -19,16 +19,16 @@ layout(push_constant) uniform u_params_t
 
 } u_params;
 
-layout (std140, binding = 0) buffer    buf { WeightInfo nlmData[]; };
+layout (binding = 0) buffer    buf { WeightInfo nlmData[]; };
 layout (binding = 1) uniform sampler2D u_targetImage;
 layout (binding = 2) uniform sampler2D u_neighbourImage;
 
 void nlmDenoice(ivec2 a_texCoord)
 {
-    const float filteringParameter = 1.f;
-    const int   stride = 17;
-    float normWeight = 0.f;
-    vec4 weightColor = vec4(0.);
+    const float filteringParameter = 10.8f;
+    const int   stride = 15;
+    float normWeight = 0.001f;
+    vec4 weightColor = vec4(0.0f, 0.0f, 0.0f, 1.0f);
 
     // Loop through all pixels of an image
     for (int y = PATCH_WINDOW; y < u_params.height - PATCH_WINDOW; y += stride)
@@ -45,8 +45,8 @@ void nlmDenoice(ivec2 a_texCoord)
                     vec4 neighbourColor = texelFetch(u_neighbourImage, ivec2(i + x, j + y), 0);
 
                     colorDistance += pow(targetColor.x - neighbourColor.x, 2.f)
-                                + pow(targetColor.y - neighbourColor.y, 2.f)
-                                + pow(targetColor.z - neighbourColor.z, 2.f);
+                        + pow(targetColor.y - neighbourColor.y, 2.f)
+                        + pow(targetColor.z - neighbourColor.z, 2.f);
                 }
             }
 
