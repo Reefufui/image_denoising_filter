@@ -1,3 +1,5 @@
 build/
-res/*.bmp
+res/
 *.bmp
+*.zip
+*.spv

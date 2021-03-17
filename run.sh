@@ -1,8 +1,19 @@
-cd build
-make -j 5
+#!/bin/bash
+
+if [ -d "build" ]; then
+    cd build
+    make -j 5
+    cd ..
+else
+    mkdir build
+    cd build
+    cmake ..
+    make -j 5
+    cd ..
+fi
+
+cd shaders
+sh compile_shaders.sh
 cd ..
-./build/vulkan_denoice res/cornelbox.bmp
-qview result.bmp &
-qview cpu_result.bmp &
-rm result.bmp
-rm cpu_result.bmp
+
+./build/vulkan_denoice

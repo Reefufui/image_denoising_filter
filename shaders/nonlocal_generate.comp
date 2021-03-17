@@ -1,0 +1,37 @@
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+#define WORKGROUP_SIZE 16
+
+layout (local_size_x = WORKGROUP_SIZE, local_size_y = WORKGROUP_SIZE, local_size_z = 1 ) in;
+
+struct Pixel
+{
+    vec4 value;
+};
+
+struct WeightInfo
+{
+    vec4 weightColor;
+    float normWeight;
+};
+
+layout(push_constant) uniform u_params_t
+{
+    int width;
+    int height;
+
+} u_params;
+
+layout (binding = 0) buffer buf { Pixel imageData[]; };
+layout (binding = 1) buffer buf2 { WeightInfo nlmData[]; };
+
+void main()
+{
+    if (gl_GlobalInvocationID.x >= u_params.width || gl_GlobalInvocationID.y >= u_params.height)
+        return;
+
+    int coord = int(gl_GlobalInvocationID.y * u_params.width + gl_GlobalInvocationID.x);
+
+    imageData[coord].value = nlmData[coord].weightColor / nlmData[coord].normWeight;
+}
