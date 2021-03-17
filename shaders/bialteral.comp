@@ -30,8 +30,8 @@ vec4 bilateralFilter(ivec2 a_texCoord)
 
     if (   (a_texCoord.x - TEXEL_WINDOW) < 0 
         || (a_texCoord.y - TEXEL_WINDOW) < 0
-        || (a_texCoord.x + TEXEL_WINDOW) > params.height
-        || (a_texCoord.y + TEXEL_WINDOW) > params.width)
+        || (a_texCoord.x + TEXEL_WINDOW) > params.width
+        || (a_texCoord.y + TEXEL_WINDOW) > params.height)
     {
         return texColor;
     }

@@ -12,4 +12,8 @@ else
     cd ..
 fi
 
+cd shaders
+sh compile_shaders.sh
+cd ..
+
 ./build/vulkan_denoice

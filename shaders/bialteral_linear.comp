@@ -30,8 +30,8 @@ vec4 bialteralFilter(int a_texCoord)
 
     if (   (gl_GlobalInvocationID.x - TEXEL_WINDOW) < 0 
         || (gl_GlobalInvocationID.y - TEXEL_WINDOW) < 0
-        || (gl_GlobalInvocationID.x + TEXEL_WINDOW) > params.height
-        || (gl_GlobalInvocationID.y + TEXEL_WINDOW) > params.width)
+        || (gl_GlobalInvocationID.x + TEXEL_WINDOW) > params.width
+        || (gl_GlobalInvocationID.y + TEXEL_WINDOW) > params.height)
     {
         return texColor;
     }
