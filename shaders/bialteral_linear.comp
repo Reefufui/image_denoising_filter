@@ -28,6 +28,7 @@ vec4 bialteralFilter(int a_texCoord)
 {
     vec4 texColor = texelFetch(inputImageData, a_texCoord);
 
+/*
     if (   (gl_GlobalInvocationID.x - TEXEL_WINDOW) < 0 
         || (gl_GlobalInvocationID.y - TEXEL_WINDOW) < 0
         || (gl_GlobalInvocationID.x + TEXEL_WINDOW) > params.width
@@ -35,6 +36,7 @@ vec4 bialteralFilter(int a_texCoord)
     {
         return texColor;
     }
+    */
 
     // controls the influence of distant pixels
     const float spatialSigma = 10;
