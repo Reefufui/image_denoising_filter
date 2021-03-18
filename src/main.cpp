@@ -63,8 +63,9 @@ class ComputeApplication
         VkBufferView              m_texelBufferView{};
         VkQueryPool               m_queryPool{};
         bool                      m_linear{};
-        bool                      m_nlmFilter{}; // if false then bialteral (default)
-        bool                      m_multiframe{}; // works only with nlm
+        bool                      m_nlmFilter{};          // if false then bialteral (default)
+        bool                      m_multiframe{};         // works only with nlm
+        bool                      m_execAndCopyOverlap{}; // if false then dispathes and copy/clear commands dont overlap
         CustomVulkanTexture       m_targetImage{};
         CustomVulkanTexture       m_neighbourImage{};
         uint64_t                  m_transferTimeElapsed{};
@@ -681,7 +682,8 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
 
 #ifdef QUERY_TIME
-            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 4);
+            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
 #endif
 
             vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
@@ -693,7 +695,6 @@ class ComputeApplication
             vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
 
 #ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
             vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TRANSFER_BIT, a_queryPool, 1);
 #endif
 
@@ -724,8 +725,7 @@ class ComputeApplication
             vkCmdCopyBuffer(a_cmdBuff, a_bufferGPU, a_bufferStaging, 1, &copyInfo);
 
 #ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 2);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 2);
 #endif
 
             VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
@@ -740,9 +740,8 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
 
 #ifdef QUERY_TIME
-            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 4);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 2);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 3);
+            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
 #endif
 
             vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
@@ -754,69 +753,8 @@ class ComputeApplication
             vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
 
 #ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 1);
-#endif
-
-            VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
-        }
-
-        static void RecordCommandsOfTransferNLM(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline,VkPipelineLayout a_layout, const VkDescriptorSet &a_ds,
-                size_t a_bufferSize, VkBuffer a_bufferGPU, VkBuffer a_bufferStaging, int a_w, int a_h, VkQueryPool a_queryPool)
-        {
-            VkCommandBufferBeginInfo beginInfo{};
-            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
-
-#ifdef QUERY_TIME
-            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 4);
-#endif
-
-            vkCmdFillBuffer(a_cmdBuff, a_bufferStaging, 0, a_bufferSize, 0);
-
-            vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
-            vkCmdBindDescriptorSets(a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_layout, 0, 1, &a_ds, 0, NULL);
-
-            int wh[2]{ a_w, a_h };
-            vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
-
-            vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
-
-#ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
             vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TRANSFER_BIT, a_queryPool, 1);
-#endif
-
-            VkBufferMemoryBarrier bufBarr{};
-            bufBarr.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-            bufBarr.pNext = nullptr;
-            bufBarr.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            bufBarr.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            bufBarr.size                = VK_WHOLE_SIZE;
-            bufBarr.offset              = 0;
-            bufBarr.buffer              = a_bufferGPU;
-            bufBarr.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-            bufBarr.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
-
-            vkCmdPipelineBarrier(a_cmdBuff,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    0,
-                    0, nullptr,
-                    1, &bufBarr,
-                    0, nullptr);
-
-            VkBufferCopy copyInfo{};
-            copyInfo.dstOffset = 0;
-            copyInfo.srcOffset = 0;
-            copyInfo.size      = a_bufferSize;
-
-            vkCmdCopyBuffer(a_cmdBuff, a_bufferGPU, a_bufferStaging, 1, &copyInfo);
-
-#ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 2);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 2);
 #endif
 
             VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
@@ -831,7 +769,7 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
 
 #ifdef QUERY_TIME
-            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 4);
+            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 3);
             vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
             vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 1);
 #endif
@@ -876,8 +814,7 @@ class ComputeApplication
             vkCmdCopyBufferToImage(a_cmdBuff, a_bufferDynamic, *a_images, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &wholeRegion);
 
 #ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 2);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 2);
 #endif
 
             VkImageMemoryBarrier imgBar{};
@@ -908,20 +845,6 @@ class ComputeApplication
                     0, nullptr,
                     1, &imgBar);
 
-            //VkImageMemoryBarrier barForCopy[2];
-            //barForCopy[0] = imBarTransfer(a_images[0], rangeWholeImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            //barForCopy[1] = imBarTransfer(a_images[1], rangeWholeImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            //
-            //vkCmdPipelineBarrier(a_cmdBuff,
-            //                     VK_PIPELINE_STAGE_TRANSFER_BIT,
-            //                     VK_PIPELINE_STAGE_TRANSFER_BIT,
-            //                     0,
-            //                     0, nullptr,     // general memory barriers
-            //                     0, nullptr,     // buffer barriers
-            //                     2, barForCopy); // image  barriers
-            //
-            //vkCmdCopyImageToBuffer(a_cmdBuff, a_images[1], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, a_bufferStaging, 1, &wholeRegion);
-
             VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
         }
 
@@ -939,16 +862,16 @@ class ComputeApplication
             fenceCreateInfo.flags = 0;
             VK_CHECK_RESULT(vkCreateFence(a_device, &fenceCreateInfo, NULL, &fence));
             VK_CHECK_RESULT(vkQueueSubmit(a_queue, 1, &submitInfo, fence));
-            VK_CHECK_RESULT(vkWaitForFences(a_device, 1, &fence, VK_TRUE, 100000000000));
+            VK_CHECK_RESULT(vkWaitForFences(a_device, 1, &fence, VK_TRUE, 10000000000000));
             vkDestroyFence(a_device, fence, NULL);
 
 #ifdef QUERY_TIME
-            uint64_t data[4]{};
-            VK_CHECK_RESULT(vkGetQueryPoolResults(a_device, a_queryPool, 0, 4, 4 * sizeof(uint64_t), &data, sizeof(uint64_t),
+            uint64_t data[3]{};
+            VK_CHECK_RESULT(vkGetQueryPoolResults(a_device, a_queryPool, 0, 3, 3 * sizeof(uint64_t), &data, sizeof(uint64_t),
                         VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
 
             a_execElapsedTime     += data[1] - data[0];
-            a_transferElapsedTime += data[3] - data[2];
+            a_transferElapsedTime += data[2] - data[1];
 #endif
         }
 
@@ -1126,13 +1049,17 @@ class ComputeApplication
             }
         }
 
-        void RunOnGPU(bool nlmFilter, bool nonlinear, bool multiframe)
+        void RunOnGPU(bool nlmFilter, bool nonlinear, bool multiframe, bool execAndCopyOverlap)
         {
-            // Set members
+            // Set members (bad design goes brrrrr)
             m_nlmFilter = nlmFilter;
             m_linear = !nonlinear;
             m_multiframe = multiframe;
+            m_execAndCopyOverlap = execAndCopyOverlap;
             assert(m_nlmFilter || !multiframe);
+            assert(multiframe || !execAndCopyOverlap);
+            m_execTimeElapsed = 0;
+            m_transferTimeElapsed = 0;
             //
 
             const int deviceId{0};
@@ -1184,9 +1111,6 @@ class ComputeApplication
                     std::cout << "\tcan't load texture " + fileName + "\n";
                     return;
                 }
-                assert(imageData[0].data());
-
-                std::cout << "file name: " << fileName << "\n";
             }
 
             size_t bufferSize{sizeof(Pixel) * w * h};
@@ -1303,20 +1227,41 @@ class ComputeApplication
 
             if (m_nlmFilter)
             {
-                for (int ii{0}; ii < framesToUse; ++ii)
+                if (m_execAndCopyOverlap)
                 {
-                    std::cout << "\t\t loading image #" << ii << " data\n";
-                    //LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                    for (int ii{0}; ii < framesToUse; ++ii)
+                    {
+                        std::cout << "\t\t loading image #" << ii << " data\n";
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
 
-                    // DYNAMIC BUFFER => TEXTURE (COPYING)
-                    vkResetCommandBuffer(m_commandBuffer, 0);
-                    RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
-                    std::cout << "\t\t feeding #" << ii << "texture our neighbour image\n";
-                    RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+                        // DYNAMIC BUFFER => TEXTURE (COPYING)
+                        vkResetCommandBuffer(m_commandBuffer, 0);
+                        RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
+                        std::cout << "\t\t feeding #" << ii << "texture our neighbour image\n";
+                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
 
-                    vkResetCommandBuffer(m_commandBuffer, 0);
-                    RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
-                    RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+                        vkResetCommandBuffer(m_commandBuffer, 0);
+                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
+                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+                    }
+                }
+                else
+                {
+                    for (int ii{0}; ii < framesToUse; ++ii)
+                    {
+                        std::cout << "\t\t loading image #" << ii << " data\n";
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+
+                        // DYNAMIC BUFFER => TEXTURE (COPYING)
+                        vkResetCommandBuffer(m_commandBuffer, 0);
+                        RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
+                        std::cout << "\t\t feeding #" << ii << "texture our neighbour image\n";
+                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+
+                        vkResetCommandBuffer(m_commandBuffer, 0);
+                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
+                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+                    }
                 }
 
                 CreateCommandBuffer(m_device, queueFamilyIndex, m_pipeline2, m_pipelineLayout2, &m_commandPool2, &m_commandBuffer2);
@@ -1343,7 +1288,7 @@ class ComputeApplication
                 }
 
                 vkResetCommandBuffer(m_commandBuffer2, 0);
-                RecordCommandsOfTransferNLM(m_commandBuffer2, m_pipeline2, m_pipelineLayout2, m_descriptorSet2,
+                RecordCommandsOfExecuteAndTransfer(m_commandBuffer2, m_pipeline2, m_pipelineLayout2, m_descriptorSet2,
                         bufferSize, m_bufferGPU, m_bufferStaging, w, h, m_queryPool);
                 RunCommandBuffer(m_commandBuffer2, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
             }
@@ -1364,9 +1309,10 @@ class ComputeApplication
             std::string outputFileName{ m_imageSource };
             outputFileName.erase(outputFileName.begin(), outputFileName.begin() + 4);
             outputFileName.erase(outputFileName.end() - 1);
-            outputFileName += (m_linear) ? "-linear" : "-nonlinear";
-            outputFileName += (m_nlmFilter) ? "-nlm" : "-bialteral";
-            outputFileName += (m_multiframe) ? "-multiframe" : "";
+            outputFileName += (m_linear) ?             "-linear"     : "-nonlinear";
+            outputFileName += (m_nlmFilter) ?          "-nlm"        : "-bialteral";
+            outputFileName += (m_multiframe) ?         "-multiframe" : "";
+            outputFileName += (m_execAndCopyOverlap) ? "-overlap"    : "";
             outputFileName += ".bmp";
             std::cout << "\t\tsaving image \"" << outputFileName << "\"\n";
             SaveBMP(outputFileName.c_str(), resultData.data(), w, h);
@@ -1384,7 +1330,6 @@ class ComputeApplication
             int w{}, h{};
             fileName += "frame-0.bmp";
             std::vector<unsigned int> imageData{LoadBMP(fileName.c_str(), &w, &h)};
-            std::cout << fileName << " - file name\n";
             std::vector<Pixel>        inputPixels(w * h);
             std::vector<Pixel>        outputPixels(w * h);
 
@@ -1467,15 +1412,15 @@ class ComputeApplication
 };
 
 #define PRINT_TIME std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR \
-    << "transfer time: "  << app.GetTranferTimeElapsed() << "; " \
-    << "execution time: " << app.GetExecTimeElapsed() << "\n\n" \
+    << "transfer time: "  << app.GetTranferTimeElapsed() << "ns; " \
+    << "execution time: " << app.GetExecTimeElapsed() << "ns\n\n" \
     << CLEAR_COLOR
 
 #define PRINT_TIME2 std::cout << FOREGROUND_COLOR << BACKGROUND_COLOR \
-           << "Time taken: " \
-           << timer.elapsed() \
-           << " seconds\n\n" \
-           << CLEAR_COLOR; timer.reset()
+    << "Time taken: " \
+    << timer.elapsed() \
+    << " sec\n\n" \
+    << CLEAR_COLOR; timer.reset()
 
 int main(int argc, char **argv)
 {
@@ -1495,24 +1440,29 @@ int main(int argc, char **argv)
         ComputeApplication app{targetImage};
 
         std::cout << "######\nRunning on GPU (nonlinear bialteral)\n######\n";
-        app.RunOnGPU(false, true, false);
+        app.RunOnGPU(false, true, false, false);
         PRINT_TIME;
 
         std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
-        app.RunOnGPU(false, false, false);
+        app.RunOnGPU(false, false, false, false);
         PRINT_TIME;
 
         std::cout << "######\nRunning on GPU (nonlocal)\n######\n";
-        app.RunOnGPU(true, true, false);
+        app.RunOnGPU(true, true, false, false);
         PRINT_TIME;
 
 
         std::cout << "######\nRunning on GPU (multiframe nonlocal)\n######\n";
-        app.RunOnGPU(true, true, true);
+        app.RunOnGPU(true, true, true, false);
         PRINT_TIME;
 
-        std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
+        std::cout << "######\nRunning on GPU (multiframe nonlocal + overlapping)\n######\n";
+        app.RunOnGPU(true, true, true, true);
+        PRINT_TIME;
+
         Timer timer{};
+
+        std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
         timer.reset();
         app.RunOnCPU(targetImage, 1);
         PRINT_TIME2;

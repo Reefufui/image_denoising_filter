@@ -28,6 +28,7 @@ vec4 bilateralFilter(ivec2 a_texCoord)
 {
     vec4 texColor = texelFetch(inputTex, a_texCoord, 0);
 
+    /*
     if (   (a_texCoord.x - TEXEL_WINDOW) < 0 
         || (a_texCoord.y - TEXEL_WINDOW) < 0
         || (a_texCoord.x + TEXEL_WINDOW) > params.width
@@ -35,6 +36,7 @@ vec4 bilateralFilter(ivec2 a_texCoord)
     {
         return texColor;
     }
+    */
 
     // controls the influence of distant pixels
     const float spatialSigma = 10;
