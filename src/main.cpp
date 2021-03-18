@@ -682,7 +682,8 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
 
 #ifdef QUERY_TIME
-            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 4);
+            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
 #endif
 
             vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
@@ -694,7 +695,6 @@ class ComputeApplication
             vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
 
 #ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
             vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TRANSFER_BIT, a_queryPool, 1);
 #endif
 
@@ -725,8 +725,7 @@ class ComputeApplication
             vkCmdCopyBuffer(a_cmdBuff, a_bufferGPU, a_bufferStaging, 1, &copyInfo);
 
 #ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 2);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 2);
 #endif
 
             VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
@@ -741,9 +740,8 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
 
 #ifdef QUERY_TIME
-            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 4);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 2);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 3);
+            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
 #endif
 
             vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
@@ -755,69 +753,8 @@ class ComputeApplication
             vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
 
 #ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 1);
-#endif
-
-            VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
-        }
-
-        static void RecordCommandsOfTransferNLM(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline,VkPipelineLayout a_layout, const VkDescriptorSet &a_ds,
-                size_t a_bufferSize, VkBuffer a_bufferGPU, VkBuffer a_bufferStaging, int a_w, int a_h, VkQueryPool a_queryPool)
-        {
-            VkCommandBufferBeginInfo beginInfo{};
-            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
-
-#ifdef QUERY_TIME
-            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 4);
-#endif
-
-            vkCmdFillBuffer(a_cmdBuff, a_bufferStaging, 0, a_bufferSize, 0);
-
-            vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
-            vkCmdBindDescriptorSets(a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_layout, 0, 1, &a_ds, 0, NULL);
-
-            int wh[2]{ a_w, a_h };
-            vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
-
-            vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
-
-#ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
             vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TRANSFER_BIT, a_queryPool, 1);
-#endif
-
-            VkBufferMemoryBarrier bufBarr{};
-            bufBarr.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-            bufBarr.pNext = nullptr;
-            bufBarr.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            bufBarr.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            bufBarr.size                = VK_WHOLE_SIZE;
-            bufBarr.offset              = 0;
-            bufBarr.buffer              = a_bufferGPU;
-            bufBarr.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-            bufBarr.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
-
-            vkCmdPipelineBarrier(a_cmdBuff,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    0,
-                    0, nullptr,
-                    1, &bufBarr,
-                    0, nullptr);
-
-            VkBufferCopy copyInfo{};
-            copyInfo.dstOffset = 0;
-            copyInfo.srcOffset = 0;
-            copyInfo.size      = a_bufferSize;
-
-            vkCmdCopyBuffer(a_cmdBuff, a_bufferGPU, a_bufferStaging, 1, &copyInfo);
-
-#ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 2);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 2);
 #endif
 
             VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
@@ -832,7 +769,7 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
 
 #ifdef QUERY_TIME
-            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 4);
+            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 3);
             vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
             vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 1);
 #endif
@@ -877,8 +814,7 @@ class ComputeApplication
             vkCmdCopyBufferToImage(a_cmdBuff, a_bufferDynamic, *a_images, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &wholeRegion);
 
 #ifdef QUERY_TIME
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 2);
-            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 2);
 #endif
 
             VkImageMemoryBarrier imgBar{};
@@ -930,12 +866,12 @@ class ComputeApplication
             vkDestroyFence(a_device, fence, NULL);
 
 #ifdef QUERY_TIME
-            uint64_t data[4]{};
-            VK_CHECK_RESULT(vkGetQueryPoolResults(a_device, a_queryPool, 0, 4, 4 * sizeof(uint64_t), &data, sizeof(uint64_t),
+            uint64_t data[3]{};
+            VK_CHECK_RESULT(vkGetQueryPoolResults(a_device, a_queryPool, 0, 3, 3 * sizeof(uint64_t), &data, sizeof(uint64_t),
                         VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
 
             a_execElapsedTime     += data[1] - data[0];
-            a_transferElapsedTime += data[3] - data[2];
+            a_transferElapsedTime += data[2] - data[1];
 #endif
         }
 
@@ -1122,6 +1058,8 @@ class ComputeApplication
             m_execAndCopyOverlap = execAndCopyOverlap;
             assert(m_nlmFilter || !multiframe);
             assert(multiframe || !execAndCopyOverlap);
+            m_execTimeElapsed = 0;
+            m_transferTimeElapsed = 0;
             //
 
             const int deviceId{0};
@@ -1350,7 +1288,7 @@ class ComputeApplication
                 }
 
                 vkResetCommandBuffer(m_commandBuffer2, 0);
-                RecordCommandsOfTransferNLM(m_commandBuffer2, m_pipeline2, m_pipelineLayout2, m_descriptorSet2,
+                RecordCommandsOfExecuteAndTransfer(m_commandBuffer2, m_pipeline2, m_pipelineLayout2, m_descriptorSet2,
                         bufferSize, m_bufferGPU, m_bufferStaging, w, h, m_queryPool);
                 RunCommandBuffer(m_commandBuffer2, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
             }
