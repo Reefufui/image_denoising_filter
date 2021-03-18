@@ -50,10 +50,11 @@ class ComputeApplication
         VkShaderModule            m_computeShaderModule{}, m_computeShaderModule2{};
         VkCommandBuffer           m_commandBuffer{},       m_commandBuffer2{};
         VkQueue                   m_queue{},               m_queue2{};
-        VkDescriptorSet           m_descriptorSet{},       m_descriptorSet2{};
+        VkDescriptorSet           m_descriptorSet{},       m_descriptorSet2{}, m_descriptorSet3{};
         VkDescriptorSetLayout     m_descriptorSetLayout{}, m_descriptorSetLayout2{};
-        VkDescriptorPool          m_descriptorPool{},      m_descriptorPool2{};
+        VkDescriptorPool          m_descriptorPool{},      m_descriptorPool2{}, m_descriptorPool3{};
         VkCommandPool             m_commandPool{},         m_commandPool2{};
+        CustomVulkanTexture       m_neighbourImage{},      m_neighbourImage2{};
         VkBuffer                  m_bufferGPU{};
         VkBuffer                  m_bufferDynamic{};
         VkBuffer                  m_bufferStaging{};
@@ -67,7 +68,6 @@ class ComputeApplication
         bool                      m_multiframe{};         // works only with nlm
         bool                      m_execAndCopyOverlap{}; // if false then dispathes and copy/clear commands dont overlap
         CustomVulkanTexture       m_targetImage{};
-        CustomVulkanTexture       m_neighbourImage{};
         uint64_t                  m_transferTimeElapsed{};
         uint64_t                  m_execTimeElapsed{};
         std::string               m_imageSource{};
@@ -760,6 +760,104 @@ class ComputeApplication
             VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
         }
 
+        static void RecordCommandsOfOverlappingNLM(VkCommandBuffer a_cmdBuff, int a_w, int a_h, VkBuffer a_bufferDynamic,
+                VkImage *a_images,  const VkDescriptorSet &a_ds, VkPipeline a_pipeline, VkPipelineLayout a_layout, VkQueryPool a_queryPool)
+        {
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            VK_CHECK_RESULT(vkBeginCommandBuffer(a_cmdBuff, &beginInfo));
+
+#ifdef QUERY_TIME
+            vkCmdResetQueryPool(a_cmdBuff, a_queryPool, 0, 3);
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, a_queryPool, 0);
+#endif
+
+            vkCmdBindPipeline      (a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_pipeline);
+            vkCmdBindDescriptorSets(a_cmdBuff, VK_PIPELINE_BIND_POINT_COMPUTE, a_layout, 0, 1, &a_ds, 0, NULL);
+
+            int wh[2]{ a_w, a_h };
+            vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
+
+            vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
+
+#ifdef QUERY_TIME
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_TRANSFER_BIT, a_queryPool, 1);
+#endif
+
+            VkImageSubresourceRange rangeWholeImage = WholeImageRange();
+
+            VkImageSubresourceLayers shittylayers{};
+            shittylayers.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+            shittylayers.mipLevel       = 0;
+            shittylayers.baseArrayLayer = 0;
+            shittylayers.layerCount     = 1;
+
+            VkBufferImageCopy wholeRegion = {};
+            wholeRegion.bufferOffset      = 0;
+            wholeRegion.bufferRowLength   = uint32_t(a_w);
+            wholeRegion.bufferImageHeight = uint32_t(a_h);
+            wholeRegion.imageExtent       = VkExtent3D{uint32_t(a_w), uint32_t(a_h), 1};
+            wholeRegion.imageOffset       = VkOffset3D{0,0,0};
+            wholeRegion.imageSubresource  = shittylayers;
+
+            VkImageMemoryBarrier moveToGeneralBar = imBarTransfer(a_images[0],
+                    rangeWholeImage,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+            vkCmdPipelineBarrier(a_cmdBuff,
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0,
+                    0, nullptr,            // general memory barriers
+                    0, nullptr,            // buffer barriers
+                    1, &moveToGeneralBar); // image  barriers
+
+            VkClearColorValue clearVal = {};
+            clearVal.float32[0] = 1.0f;
+            clearVal.float32[1] = 1.0f;
+            clearVal.float32[2] = 1.0f;
+            clearVal.float32[3] = 1.0f;
+
+            vkCmdClearColorImage(a_cmdBuff, a_images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearVal, 1, &rangeWholeImage);
+
+            vkCmdCopyBufferToImage(a_cmdBuff, a_bufferDynamic, *a_images, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &wholeRegion);
+
+#ifdef QUERY_TIME
+            vkCmdWriteTimestamp(a_cmdBuff, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, a_queryPool, 2);
+#endif
+
+            VkImageMemoryBarrier imgBar{};
+            {
+                imgBar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                imgBar.pNext = nullptr;
+                imgBar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                imgBar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+                imgBar.srcAccessMask       = 0;
+                imgBar.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+                imgBar.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                imgBar.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                imgBar.image               = a_images[0];
+
+                imgBar.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+                imgBar.subresourceRange.baseMipLevel   = 0;
+                imgBar.subresourceRange.levelCount     = 1;
+                imgBar.subresourceRange.baseArrayLayer = 0;
+                imgBar.subresourceRange.layerCount     = 1;
+            };
+
+            vkCmdPipelineBarrier(a_cmdBuff,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0,
+                    0, nullptr,
+                    0, nullptr,
+                    1, &imgBar);
+
+            VK_CHECK_RESULT(vkEndCommandBuffer(a_cmdBuff));
+        }
         static void RecordCommandsOfCopyImageDataToTexture(VkCommandBuffer a_cmdBuff, int a_width, int a_height, VkBuffer a_bufferDynamic,
                 VkImage *a_images, VkQueryPool a_queryPool)
         {
@@ -954,6 +1052,7 @@ class ComputeApplication
             // Delete images
             m_targetImage.release();
             m_neighbourImage.release();
+            m_neighbourImage2.release();
 
             // Delete shader related resourses
             {
@@ -967,6 +1066,12 @@ class ComputeApplication
                 {
                     vkDestroyDescriptorPool(m_device, m_descriptorPool2, NULL);
                     m_descriptorPool2 = VK_NULL_HANDLE;
+                }
+
+                if (m_descriptorPool3 != VK_NULL_HANDLE)
+                {
+                    vkDestroyDescriptorPool(m_device, m_descriptorPool3, NULL);
+                    m_descriptorPool3 = VK_NULL_HANDLE;
                 }
 
                 if (m_computeShaderModule != VK_NULL_HANDLE)
@@ -1136,8 +1241,12 @@ class ComputeApplication
                 {
                     // for image #k [0..framesToUse]
                     m_neighbourImage.create(m_device, m_physicalDevice, w, h);
+                    if (m_execAndCopyOverlap)
+                    {
+                        m_neighbourImage2.create(m_device, m_physicalDevice, w, h);
+                    }
                 }
-                std::cout << "\t\tnon-linear buffer created\n";
+                std::cout << "\t\tnon-linear texture created\n";
             }
 
             if (m_nlmFilter)
@@ -1159,12 +1268,18 @@ class ComputeApplication
                 CreateDescriptorSetNLM(m_device, m_bufferNLM, bufferSizeNLM, &m_descriptorSetLayout,
                         m_targetImage, m_neighbourImage, &m_descriptorPool, &m_descriptorSet);
 
+                if (m_execAndCopyOverlap)
+                {
+                    CreateDescriptorSetNLM(m_device, m_bufferNLM, bufferSizeNLM, &m_descriptorSetLayout,
+                            m_targetImage, m_neighbourImage2, &m_descriptorPool3, &m_descriptorSet3);
+                }
+
                 // DS for building result image (by normalizing)
                 CreateDescriptorSetLayoutNLM(m_device, &m_descriptorSetLayout2, m_linear, true);
                 CreateDescriptorSetNLM2(m_device, m_bufferGPU, bufferSize, &m_descriptorSetLayout2,
                         m_bufferNLM, bufferSizeNLM, &m_descriptorPool2, &m_descriptorSet2);
 
-                // we have two sepparate descriptor pools for two DS for our NLM calculating and image building shaders
+                // we use sepparate ds pools for each set
             }
             else
             {
@@ -1229,19 +1344,22 @@ class ComputeApplication
             {
                 if (m_execAndCopyOverlap)
                 {
-                    for (int ii{0}; ii < framesToUse; ++ii)
+                    LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+
+                    vkResetCommandBuffer(m_commandBuffer, 0);
+                    RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
+                    RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+
+                    for (int ii{1}; ii < framesToUse; ++ii)
                     {
-                        std::cout << "\t\t loading image #" << ii << " data\n";
+                        // We are going to copy this frame to the texture while doing computations using previous frame
                         LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
 
-                        // DYNAMIC BUFFER => TEXTURE (COPYING)
                         vkResetCommandBuffer(m_commandBuffer, 0);
-                        RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
-                        std::cout << "\t\t feeding #" << ii << "texture our neighbour image\n";
-                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
-
-                        vkResetCommandBuffer(m_commandBuffer, 0);
-                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
+                        RecordCommandsOfOverlappingNLM(m_commandBuffer, w, h, m_bufferDynamic,
+                                (ii % 2 == 0) ? m_neighbourImage.getpImage() : m_neighbourImage2.getpImage(),
+                                (ii % 2 == 0) ? m_descriptorSet3             : m_descriptorSet,
+                                m_pipeline, m_pipelineLayout, m_queryPool);
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
                     }
                 }
@@ -1252,7 +1370,6 @@ class ComputeApplication
                         std::cout << "\t\t loading image #" << ii << " data\n";
                         LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
 
-                        // DYNAMIC BUFFER => TEXTURE (COPYING)
                         vkResetCommandBuffer(m_commandBuffer, 0);
                         RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
                         std::cout << "\t\t feeding #" << ii << "texture our neighbour image\n";
