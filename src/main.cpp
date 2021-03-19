@@ -1378,6 +1378,8 @@ class ComputeApplication
                         vkResetCommandBuffer(m_commandBuffer, 0);
                         RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+
+                        // we have to rerecord command buffer because we use it without overlapping: for texuture copying and computations
                     }
                 }
 
