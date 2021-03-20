@@ -8,8 +8,8 @@
 #include <cmath>
 #include <iostream>
 
-#include "Bitmap.h"
 #include "cpptqdm/tqdm.h"
+#include "FreeImage.h"
 #include "vk_utils.h"
 #include "texture.hpp"
 #include "timer.hpp"
@@ -71,7 +71,7 @@ class ComputeApplication
         uint64_t                  m_transferTimeElapsed{};
         uint64_t                  m_execTimeElapsed{};
         std::string               m_imageSource{};
-
+        FREE_IMAGE_FORMAT         m_format{};
         std::vector<const char *> m_enabledLayers{};
 
     public:
@@ -1189,27 +1189,28 @@ class ComputeApplication
 
             using image_t = std::vector<unsigned int>;
             const int framesToUse{(multiframe) ? 10 : 1};
+            std::vector<image_t> imageData{};
 
             int w{}, h{};
-            std::vector<image_t> imageData{};
             {
                 std::string fileName{ m_imageSource + "frame-0.bmp" };
-                imageData.push_back(LoadBMP(fileName.c_str(), &w, &h));
 
-                for (int ii{1}; ii < framesToUse; ++ii)
-                {
-                    int _w{}, _h{};
-                    fileName[m_imageSource.length() + 6] = '0' + ii;
-                    imageData.push_back(LoadBMP(fileName.c_str(), &_w, &_h));
+                m_format = FreeImage_GetFileType(fileName.c_str());
+                if (m_format == FIF_UNKNOWN) m_format = FreeImage_GetFIFFromFilename(fileName.c_str());
+                if (m_format == FIF_UNKNOWN) throw(std::runtime_error("File format not supported"));
 
-                    if (!imageData[ii].size())
-                    {
-                        std::cout << "\tcan't load texture " + fileName + "\n";
-                        return;
-                    }
+                FIBITMAP* bitmap = FreeImage_Load(m_format, fileName.c_str());
+                FIBITMAP* bitmap2 = FreeImage_ConvertTo32Bits(bitmap);
+                FreeImage_Unload(bitmap);
 
-                    assert(_w == w && _h == h && "Input images shapes dont match");
-                }
+                w = FreeImage_GetWidth(bitmap2);
+                h = FreeImage_GetHeight(bitmap2);
+                image_t out(w * h * 4);
+                FreeImage_ConvertToRawBits((BYTE*)out.data(), bitmap2, w * 4, 32, FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true);
+
+                FreeImage_Unload(bitmap2);
+
+                imageData.push_back(out);
 
                 if (!imageData[0].size())
                 {
@@ -1433,22 +1434,43 @@ class ComputeApplication
             outputFileName += (m_multiframe) ?         "-multiframe" : "";
             outputFileName += (m_execAndCopyOverlap) ? "-overlap"    : "";
             outputFileName += ".bmp";
-            std::cout << "\t\tsaving image \"" << outputFileName << "\"\n";
-            SaveBMP(outputFileName.c_str(), resultData.data(), w, h);
-            resultData = std::vector<uint32_t>();
-            imageData = std::vector<image_t>();
 
+            std::cout << "\t\tsaving image \"" << outputFileName << "\"\n";
+
+            FIBITMAP* bitmap{FreeImage_ConvertFromRawBits((BYTE*)resultData.data(), w, h, w * 4, 32,
+                    FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true)};
+
+            FreeImage_Save(m_format, bitmap, outputFileName.c_str(), 0);
             //----------------------------------------------------------------------------------------------------------------------
             std::cout << "\tcleaning up\n";
             //----------------------------------------------------------------------------------------------------------------------
+            resultData = std::vector<uint32_t>();
+            imageData = std::vector<image_t>();
             Cleanup();
         }
 
         void RunOnCPU(std::string fileName, int numThreads)
         {
-            int w{}, h{};
+            using image_t = std::vector<unsigned int>;
             fileName += "frame-0.bmp";
-            std::vector<unsigned int> imageData{LoadBMP(fileName.c_str(), &w, &h)};
+
+            m_format = FreeImage_GetFileType(fileName.c_str());
+            if (m_format == FIF_UNKNOWN) m_format = FreeImage_GetFIFFromFilename(fileName.c_str());
+            if (m_format == FIF_UNKNOWN) throw(std::runtime_error("File format not supported"));
+
+            FIBITMAP* bitmap = FreeImage_Load(m_format, fileName.c_str());
+            FIBITMAP* bitmap2 = FreeImage_ConvertTo32Bits(bitmap);
+            FreeImage_Unload(bitmap);
+
+            unsigned int w{FreeImage_GetWidth(bitmap2)};
+            unsigned int h{FreeImage_GetHeight(bitmap2)};
+            image_t imageData(w * h * 4);
+            FreeImage_ConvertToRawBits((BYTE*)imageData.data(), bitmap2, w * 4, 32, FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true);
+
+            FreeImage_Unload(bitmap2);
+
+            if (!imageData.size()) throw(std::runtime_error("Can't load texture"));
+
             std::vector<Pixel>        inputPixels(w * h);
             std::vector<Pixel>        outputPixels(w * h);
 
@@ -1463,7 +1485,6 @@ class ComputeApplication
                 inputPixels[i].b = float(b)*(1.0f/255.0f);
                 inputPixels[i].a = 0.0f;
             }
-
 
             std::cout << "\tdoing computations\n";
 
@@ -1526,7 +1547,10 @@ class ComputeApplication
                 imageData[i] = (r << 0) | (g << 8) | (b << 16);
             }
 
-            SaveBMP("cpu_result.bmp", imageData.data(), w, h);
+            bitmap = FreeImage_ConvertFromRawBits((BYTE*)imageData.data(), w, h, w * 4, 32,
+                    FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true);
+
+            FreeImage_Save(m_format, bitmap, "cpu_result.bmp", 0);
         }
 };
 
@@ -1562,34 +1586,37 @@ int main(int argc, char **argv)
         app.RunOnGPU(false, true, false, false);
         PRINT_TIME;
 
-        std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
-        app.RunOnGPU(false, false, false, false);
-        PRINT_TIME;
+        /*
 
-        std::cout << "######\nRunning on GPU (nonlocal)\n######\n";
-        app.RunOnGPU(true, true, false, false);
-        PRINT_TIME;
+           std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
+           app.RunOnGPU(false, false, false, false);
+           PRINT_TIME;
+
+           std::cout << "######\nRunning on GPU (nonlocal)\n######\n";
+           app.RunOnGPU(true, true, false, false);
+           PRINT_TIME;
 
 
-        std::cout << "######\nRunning on GPU (multiframe nonlocal)\n######\n";
-        app.RunOnGPU(true, true, true, false);
-        PRINT_TIME;
+           std::cout << "######\nRunning on GPU (multiframe nonlocal)\n######\n";
+           app.RunOnGPU(true, true, true, false);
+           PRINT_TIME;
 
-        std::cout << "######\nRunning on GPU (multiframe nonlocal + overlapping)\n######\n";
-        app.RunOnGPU(true, true, true, true);
-        PRINT_TIME;
+           std::cout << "######\nRunning on GPU (multiframe nonlocal + overlapping)\n######\n";
+           app.RunOnGPU(true, true, true, true);
+           PRINT_TIME;
 
-        Timer timer{};
 
-        std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
-        timer.reset();
-        app.RunOnCPU(targetImage, 1);
-        PRINT_TIME2;
+           std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
+           timer.reset();
+           app.RunOnCPU(targetImage, 1);
+           PRINT_TIME2;
+           */
+           Timer timer{};
 
-        std::cout << "######\nRunning on CPU (8 threads bialteral)\n######\n";
-        timer.reset();
-        app.RunOnCPU(targetImage, 8);
-        PRINT_TIME2;
+           std::cout << "######\nRunning on CPU (8 threads bialteral)\n######\n";
+           timer.reset();
+           app.RunOnCPU(targetImage, 8);
+           PRINT_TIME2;
     }
     catch (const std::runtime_error& e)
     {

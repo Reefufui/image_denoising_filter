@@ -1,5 +1,6 @@
 build/
-res/
+res/*/*
+!res/hdr/*
 *.bmp
 *.zip
 *.spv
