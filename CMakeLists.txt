@@ -24,7 +24,7 @@ set(ALL_LIBS
 #uncomment this to detect broken memory problems via gcc sanitizers
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fsanitize-address-use-after-scope -fno-omit-frame-pointer -fsanitize=leak -fsanitize=undefined -fsanitize=bounds-strict")
 
-add_executable(vulkan_denoice src/main.cpp src/vk_utils.h src/vk_utils.cpp src/Bitmap.h src/Bitmap.cpp src/texture.cpp)
+add_executable(vulkan_denoice src/main.cpp src/vk_utils.h src/vk_utils.cpp src/texture.cpp)
 
 set_target_properties(vulkan_denoice PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"

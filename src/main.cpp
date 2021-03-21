@@ -1193,7 +1193,7 @@ class ComputeApplication
 
             int w{}, h{};
             {
-                std::string fileName{ m_imageSource + "frame-0.bmp" };
+                std::string fileName{ m_imageSource };
 
                 m_format = FreeImage_GetFileType(fileName.c_str());
                 if (m_format == FIF_UNKNOWN) m_format = FreeImage_GetFIFFromFilename(fileName.c_str());
@@ -1433,7 +1433,7 @@ class ComputeApplication
             outputFileName += (m_nlmFilter) ?          "-nlm"        : "-bialteral";
             outputFileName += (m_multiframe) ?         "-multiframe" : "";
             outputFileName += (m_execAndCopyOverlap) ? "-overlap"    : "";
-            outputFileName += ".bmp";
+            outputFileName += ".png";
 
             std::cout << "\t\tsaving image \"" << outputFileName << "\"\n";
 
@@ -1605,18 +1605,17 @@ int main(int argc, char **argv)
            app.RunOnGPU(true, true, true, true);
            PRINT_TIME;
 
-
+           Timer timer{};
            std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
            timer.reset();
            app.RunOnCPU(targetImage, 1);
            PRINT_TIME2;
-           */
-           Timer timer{};
 
            std::cout << "######\nRunning on CPU (8 threads bialteral)\n######\n";
            timer.reset();
            app.RunOnCPU(targetImage, 8);
            PRINT_TIME2;
+           */
     }
     catch (const std::runtime_error& e)
     {
