@@ -9,9 +9,17 @@ add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 
 set(CMAKE_CXX_STANDARD 20)
 
-include_directories(${Vulkan_INCLUDE_DIR} src/vendor)
+include_directories(${Vulkan_INCLUDE_DIR}
+    src/vendor
+    deps/FreeImage/include)
 
-set(ALL_LIBS OpenMP::OpenMP_CXX ${Vulkan_LIBRARY} )
+add_library(FreeImage SHARED IMPORTED)
+set_property(TARGET FreeImage PROPERTY IMPORTED_LOCATION "/home/reefufui/dev/vulkan_image_processing/deps/FreeImage/lib/libfreeimageplus-3.18.0.so")
+
+set(ALL_LIBS
+    FreeImage
+    OpenMP::OpenMP_CXX
+    ${Vulkan_LIBRARY} )
 
 #uncomment this to detect broken memory problems via gcc sanitizers
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fsanitize-address-use-after-scope -fno-omit-frame-pointer -fsanitize=leak -fsanitize=undefined -fsanitize=bounds-strict")
