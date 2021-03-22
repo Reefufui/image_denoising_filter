@@ -1,3 +1,6 @@
 [submodule "src/vendor/cpptqdm"]
 	path = src/vendor/cpptqdm
 	url = https://github.com/aminnj/cpptqdm.git
+[submodule "src/vendor/tinyexr"]
+	path = src/vendor/tinyexr
+	url = https://github.com/syoyo/tinyexr.git

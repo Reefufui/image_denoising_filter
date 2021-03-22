@@ -9,9 +9,13 @@
 #include <iostream>
 
 #include "cpptqdm/tqdm.h"
+
+#define TINYEXR_IMPLEMENTATION
+#include "tinyexr/tinyexr.h"
 #include "FreeImage.h"
-#include "vk_utils.h"
 #include "texture.hpp"
+
+#include "vk_utils.h"
 #include "timer.hpp"
 
 #define FOREGROUND_COLOR "\033[38;2;0;0;0m"
@@ -136,7 +140,6 @@ class ComputeApplication
 
             vkUnmapMemory(a_device, a_dynamicMem);
         }
-
 
         static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallbackFn(
                 VkDebugReportFlagsEXT                       flags,
@@ -1247,8 +1250,34 @@ class ComputeApplication
             {
                 if (m_isHDR)
                 {
-                    std::cout << "Still do not have hdr support - im dumm\n";
-                    return;
+                    float* rgba{nullptr};
+                    const char* err = nullptr;
+
+                    int ret = LoadEXR(&rgba, &w, &h, fileName.c_str(), &err);
+
+                    if (ret != TINYEXR_SUCCESS)
+                    {
+                        if (err) {
+                            fprintf(stderr, "ERR : %s\n", err);
+                            FreeEXRErrorMessage(err); // release memory of error message.
+                        }
+                    }
+                    else
+                    {
+                        hdrImage_t image(w * h);
+
+                        for (int i{}; i < w * h; ++i)
+                        {
+                            image[i].r = rgba[4 * i + 0];
+                            image[i].g = rgba[4 * i + 1];
+                            image[i].b = rgba[4 * i + 2];
+                            image[i].a = rgba[4 * i + 3];
+                        }
+
+                        imageDataHDR.push_back(image);
+
+                        free(rgba);
+                    }
                 }
                 else
                 {
@@ -1272,8 +1301,6 @@ class ComputeApplication
                 }
 
             }
-
-            std::cout << "w: " << w << " " << "h: " << h << "\n";
 
             size_t bufferSize{sizeof(Pixel) * w * h};
             size_t bufferSizeNLM{(sizeof(Pixel) + 4 * sizeof(float)) * w * h}; // GLSL alignment
@@ -1507,8 +1534,8 @@ class ComputeApplication
             std::cout << "\tgetting image back\n";
             //----------------------------------------------------------------------------------------------------------------------
 
-            std::vector<uint32_t> resultData(w * h);
-            std::vector<Pixel> resultHDRData(w * h);
+            image_t    resultData(w * h);
+            hdrImage_t resultHDRData(w * h);
 
             if (m_isHDR)
             {
@@ -1529,6 +1556,26 @@ class ComputeApplication
             {
                 outputFileName += ".exr";
 
+                const char* err = nullptr;
+                float *rgba = new float[w * h * 4];
+
+                for (int i{}; i < w * h; ++i)
+                {
+                    rgba[4 * i + 0] = resultHDRData[i].r;
+                    rgba[4 * i + 1] = resultHDRData[i].g;
+                    rgba[4 * i + 2] = resultHDRData[i].b;
+                    rgba[4 * i + 3] = resultHDRData[i].a;
+                }
+
+                int ret = SaveEXR(rgba, w, h, 4, 0, outputFileName.c_str(), &err);
+                if (ret != TINYEXR_SUCCESS) {
+                    if (err) {
+                        fprintf(stderr, "err: %s\n", err);
+                        FreeEXRErrorMessage(err);
+                    }
+                }
+
+                free(rgba);
                 std::cout << "??\n";
             }
             else
@@ -1701,6 +1748,7 @@ int main(int argc, char **argv)
         PRINT_TIME;
 
         /*
+
            std::cout << "######\nRunning on GPU (nonlocal)\n######\n";
            app.RunOnGPU(true, true, false, false);
            PRINT_TIME;
