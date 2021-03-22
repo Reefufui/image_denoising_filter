@@ -1,6 +1,10 @@
 build/
-res/*/*
-!res/hdr/*
+Animations/Bathroom01/*
+Animations/CornellBox/*
+Animations/WasteWhite/*
 *.bmp
+*.png
+*.hdr
+*.exr
 *.zip
 *.spv

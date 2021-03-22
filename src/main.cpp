@@ -9,9 +9,13 @@
 #include <iostream>
 
 #include "cpptqdm/tqdm.h"
+
+#define TINYEXR_IMPLEMENTATION
+#include "tinyexr/tinyexr.h"
 #include "FreeImage.h"
-#include "vk_utils.h"
 #include "texture.hpp"
+
+#include "vk_utils.h"
 #include "timer.hpp"
 
 #define FOREGROUND_COLOR "\033[38;2;0;0;0m"
@@ -72,6 +76,7 @@ class ComputeApplication
         uint64_t                  m_execTimeElapsed{};
         std::string               m_imageSource{};
         FREE_IMAGE_FORMAT         m_format{};
+        bool                      m_isHDR{};
         std::vector<const char *> m_enabledLayers{};
 
     public:
@@ -99,6 +104,23 @@ class ComputeApplication
             vkUnmapMemory(a_device, a_stagingMem);
         }
 
+        static void GetImageFromGPU(VkDevice a_device, VkDeviceMemory a_stagingMem, int a_w, int a_h, Pixel *a_imageData)
+        {
+            void *mappedMemory = nullptr;
+            vkMapMemory(a_device, a_stagingMem, 0, a_w * a_h * sizeof(Pixel), 0, &mappedMemory);
+            Pixel* pmappedMemory = (Pixel *)mappedMemory;
+
+            for (int i = 0; i < a_w * a_h; ++i)
+            {
+                a_imageData[i].r = pmappedMemory[i].r;
+                a_imageData[i].g = pmappedMemory[i].g;
+                a_imageData[i].b = pmappedMemory[i].b;
+                a_imageData[i].a = pmappedMemory[i].a;
+            }
+
+            vkUnmapMemory(a_device, a_stagingMem);
+        }
+
         static void PutImageToGPU(VkDevice a_device, VkDeviceMemory a_dynamicMem, int a_w, int a_h, const uint32_t *a_imageData)
         {
             void *mappedMemory = nullptr;
@@ -118,7 +140,6 @@ class ComputeApplication
 
             vkUnmapMemory(a_device, a_dynamicMem);
         }
-
 
         static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallbackFn(
                 VkDebugReportFlagsEXT                       flags,
@@ -222,14 +243,15 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBindBufferMemory(a_device, (*a_pBuffer), (*a_pBufferMemory), 0));
         }
 
-        static void CreateTexelBufferView(VkDevice a_device, const size_t a_bufferSize, VkBuffer a_buffer, VkBufferView *a_pBufferView)
+        static void CreateTexelBufferView(VkDevice a_device, const size_t a_bufferSize, VkBuffer a_buffer,
+                VkBufferView *a_pBufferView, bool a_isHDR = false)
         {
             VkBufferViewCreateInfo bufferViewCreateInfo{};
             bufferViewCreateInfo.sType   = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO;
             bufferViewCreateInfo.pNext   = nullptr;
             bufferViewCreateInfo.flags   = 0;
             bufferViewCreateInfo.buffer  = a_buffer;
-            bufferViewCreateInfo.format  = VK_FORMAT_R8G8B8A8_UNORM;
+            bufferViewCreateInfo.format  = (a_isHDR) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
             bufferViewCreateInfo.offset  = 0;
             bufferViewCreateInfo.range   = a_bufferSize;
 
@@ -978,6 +1000,7 @@ class ComputeApplication
         {
             void *mappedMemory = nullptr;
 
+            std::cout << "here\n";
             if (a_linear)
             {
                 vkMapMemory(a_device, a_bufferMemoryTexel, 0, a_w * a_h * sizeof(int), 0, &mappedMemory);
@@ -990,6 +1013,27 @@ class ComputeApplication
                 memcpy(mappedMemory, a_imageData.data(), a_w * a_h * sizeof(int));
                 vkUnmapMemory(a_device, a_bufferMemoryDynamic);
             }
+            std::cout << "here\n";
+        }
+
+        static void LoadImageDataToBuffer(VkDevice a_device, VkPhysicalDevice a_physDevice, std::vector<Pixel> a_imageDataHDR,
+                int a_w, int a_h, VkDeviceMemory a_bufferMemoryTexel, VkDeviceMemory a_bufferMemoryDynamic, bool a_linear)
+        {
+            void *mappedMemory = nullptr;
+
+            if (a_linear)
+            {
+                vkMapMemory(a_device, a_bufferMemoryTexel, 0, a_w * a_h * sizeof(Pixel), 0, &mappedMemory);
+                memcpy(mappedMemory, a_imageDataHDR.data(), a_w * a_h * sizeof(Pixel));
+                vkUnmapMemory(a_device, a_bufferMemoryTexel);
+            }
+            else
+            {
+                vkMapMemory(a_device, a_bufferMemoryDynamic, 0, a_w * a_h * sizeof(Pixel), 0, &mappedMemory);
+                memcpy(mappedMemory, a_imageDataHDR.data(), a_w * a_h * sizeof(Pixel));
+                vkUnmapMemory(a_device, a_bufferMemoryDynamic);
+            }
+
         }
 
         void Cleanup()
@@ -1187,41 +1231,79 @@ class ComputeApplication
             std::cout << "\tloading image data\n";
             //----------------------------------------------------------------------------------------------------------------------
 
-            using image_t = std::vector<unsigned int>;
             const int framesToUse{(multiframe) ? 10 : 1};
-            std::vector<image_t> imageData{};
+
+            using image_t    = std::vector<unsigned int>;
+            using hdrImage_t = std::vector<Pixel>;
+            std::vector<image_t>    imageData{};
+            std::vector<hdrImage_t> imageDataHDR{};
+
+            std::string fileName{ m_imageSource };
+            m_format = FreeImage_GetFileType(fileName.c_str());
+            if (m_format == FIF_UNKNOWN) m_format = FreeImage_GetFIFFromFilename(fileName.c_str());
+            if (m_format == FIF_UNKNOWN) throw(std::runtime_error("File format not supported"));
+            m_isHDR = (m_format == FIF_EXR);
 
             int w{}, h{};
+
+            for (int ii{}; ii < framesToUse; ++ii)
             {
-                std::string fileName{ m_imageSource + "frame-0.bmp" };
-
-                m_format = FreeImage_GetFileType(fileName.c_str());
-                if (m_format == FIF_UNKNOWN) m_format = FreeImage_GetFIFFromFilename(fileName.c_str());
-                if (m_format == FIF_UNKNOWN) throw(std::runtime_error("File format not supported"));
-
-                FIBITMAP* bitmap = FreeImage_Load(m_format, fileName.c_str());
-                FIBITMAP* bitmap2 = FreeImage_ConvertTo32Bits(bitmap);
-                FreeImage_Unload(bitmap);
-
-                w = FreeImage_GetWidth(bitmap2);
-                h = FreeImage_GetHeight(bitmap2);
-                image_t out(w * h * 4);
-                FreeImage_ConvertToRawBits((BYTE*)out.data(), bitmap2, w * 4, 32, FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true);
-
-                FreeImage_Unload(bitmap2);
-
-                imageData.push_back(out);
-
-                if (!imageData[0].size())
+                if (m_isHDR)
                 {
-                    std::cout << "\tcan't load texture " + fileName + "\n";
-                    return;
+                    float* rgba{nullptr};
+                    const char* err = nullptr;
+
+                    int ret = LoadEXR(&rgba, &w, &h, fileName.c_str(), &err);
+
+                    if (ret != TINYEXR_SUCCESS)
+                    {
+                        if (err) {
+                            fprintf(stderr, "ERR : %s\n", err);
+                            FreeEXRErrorMessage(err); // release memory of error message.
+                        }
+                    }
+                    else
+                    {
+                        hdrImage_t image(w * h);
+
+                        for (int i{}; i < w * h; ++i)
+                        {
+                            image[i].r = rgba[4 * i + 0];
+                            image[i].g = rgba[4 * i + 1];
+                            image[i].b = rgba[4 * i + 2];
+                            image[i].a = rgba[4 * i + 3];
+                        }
+
+                        imageDataHDR.push_back(image);
+
+                        free(rgba);
+                    }
                 }
+                else
+                {
+                    FIBITMAP* bitmap = FreeImage_Load(m_format, fileName.c_str());
+                    std::cout << FreeImage_GetBPP(bitmap) << "!\n";
+                    if (FreeImage_GetBPP(bitmap) != 32) 
+                    {
+                        bitmap = FreeImage_ConvertTo32Bits(bitmap);
+                    }
+
+                    w = FreeImage_GetWidth(bitmap);
+                    h = FreeImage_GetHeight(bitmap);
+                    image_t out(w * h);
+                    FreeImage_ConvertToRawBits((BYTE*)out.data(), bitmap, w * 4, 32,
+                            FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true);
+
+                    imageData.push_back(out);
+                    FreeImage_Unload(bitmap);
+
+                    if (!imageData[ii].size()) throw(std::runtime_error("Can't load texture"));
+                }
+
             }
 
             size_t bufferSize{sizeof(Pixel) * w * h};
-            // GLSL alignment 
-            size_t bufferSizeNLM{(sizeof(Pixel) + 4 * sizeof(float)) * w * h};
+            size_t bufferSizeNLM{(sizeof(Pixel) + 4 * sizeof(float)) * w * h}; // GLSL alignment
 
             //----------------------------------------------------------------------------------------------------------------------
             std::cout << "\tcreating io buffers/images of our shaders\n";
@@ -1231,20 +1313,20 @@ class ComputeApplication
             if (m_linear)
             {
                 CreateTexelBuffer(m_device, m_physicalDevice, bufferSize, &m_bufferTexel, &m_bufferMemoryTexel);
-                CreateTexelBufferView(m_device, bufferSize, m_bufferTexel, &m_texelBufferView);
+                CreateTexelBufferView(m_device, bufferSize, m_bufferTexel, &m_texelBufferView, m_isHDR);
                 std::cout << "\t\tlinear buffer created\n";
             }
             else
             {
                 // for image #0
-                m_targetImage.create(m_device, m_physicalDevice, w, h);
+                m_targetImage.create(m_device, m_physicalDevice, w, h, m_isHDR);
                 if (m_nlmFilter)
                 {
                     // for image #k [0..framesToUse]
-                    m_neighbourImage.create(m_device, m_physicalDevice, w, h);
+                    m_neighbourImage.create(m_device, m_physicalDevice, w, h, m_isHDR);
                     if (m_execAndCopyOverlap)
                     {
-                        m_neighbourImage2.create(m_device, m_physicalDevice, w, h);
+                        m_neighbourImage2.create(m_device, m_physicalDevice, w, h, m_isHDR);
                     }
                 }
                 std::cout << "\t\tnon-linear texture created\n";
@@ -1316,10 +1398,17 @@ class ComputeApplication
             if (!m_linear)
             {
                 // we feed our textures this buffer's data
-                CreateDynamicBuffer(m_device, m_physicalDevice, w * h * sizeof(int), &m_bufferDynamic, &m_bufferMemoryDynamic);
+                CreateDynamicBuffer(m_device, m_physicalDevice, w * h * ((m_isHDR) ? sizeof(Pixel) : sizeof(int)), &m_bufferDynamic, &m_bufferMemoryDynamic);
             }
 
-            LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, m_linear);
+            if (m_isHDR)
+            {
+                LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, m_linear);
+            }
+            else
+            {
+                LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, m_linear);
+            }
 
 #ifdef QUERY_TIME
             CreateQueryPool(m_device, &m_queryPool);
@@ -1345,7 +1434,14 @@ class ComputeApplication
             {
                 if (m_execAndCopyOverlap)
                 {
-                    LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                    if (m_isHDR)
+                    {
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                    }
+                    else
+                    {
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                    }
 
                     vkResetCommandBuffer(m_commandBuffer, 0);
                     RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
@@ -1354,7 +1450,14 @@ class ComputeApplication
                     for (int ii{1}; ii < framesToUse; ++ii)
                     {
                         // We are going to copy this frame to the texture while doing computations using previous frame
-                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        if (m_isHDR)
+                        {
+                            LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        }
+                        else
+                        {
+                            LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        }
 
                         vkResetCommandBuffer(m_commandBuffer, 0);
                         RecordCommandsOfOverlappingNLM(m_commandBuffer, w, h, m_bufferDynamic,
@@ -1369,7 +1472,15 @@ class ComputeApplication
                     for (int ii{0}; ii < framesToUse; ++ii)
                     {
                         std::cout << "\t\t loading image #" << ii << " data\n";
-                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+
+                        if (m_isHDR)
+                        {
+                            LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        }
+                        else
+                        {
+                            LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        }
 
                         vkResetCommandBuffer(m_commandBuffer, 0);
                         RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
@@ -1423,29 +1534,72 @@ class ComputeApplication
             std::cout << "\tgetting image back\n";
             //----------------------------------------------------------------------------------------------------------------------
 
-            std::vector<uint32_t> resultData(w * h);
-            GetImageFromGPU(m_device, m_bufferMemoryStaging, w, h, resultData.data());
+            image_t    resultData(w * h);
+            hdrImage_t resultHDRData(w * h);
 
-            std::string outputFileName{ m_imageSource };
-            outputFileName.erase(outputFileName.begin(), outputFileName.begin() + 4);
-            outputFileName.erase(outputFileName.end() - 1);
+            if (m_isHDR)
+            {
+                GetImageFromGPU(m_device, m_bufferMemoryStaging, w, h, resultHDRData.data());
+            }
+            else
+            {
+                GetImageFromGPU(m_device, m_bufferMemoryStaging, w, h, resultData.data());
+            }
+
+            std::string outputFileName{"output"};
             outputFileName += (m_linear) ?             "-linear"     : "-nonlinear";
             outputFileName += (m_nlmFilter) ?          "-nlm"        : "-bialteral";
             outputFileName += (m_multiframe) ?         "-multiframe" : "";
             outputFileName += (m_execAndCopyOverlap) ? "-overlap"    : "";
-            outputFileName += ".bmp";
 
-            std::cout << "\t\tsaving image \"" << outputFileName << "\"\n";
+            if (m_isHDR)
+            {
+                outputFileName += ".exr";
 
-            FIBITMAP* bitmap{FreeImage_ConvertFromRawBits((BYTE*)resultData.data(), w, h, w * 4, 32,
-                    FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true)};
+                const char* err = nullptr;
+                float *rgba = new float[w * h * 4];
 
-            FreeImage_Save(m_format, bitmap, outputFileName.c_str(), 0);
+                for (int i{}; i < w * h; ++i)
+                {
+                    rgba[4 * i + 0] = resultHDRData[i].r;
+                    rgba[4 * i + 1] = resultHDRData[i].g;
+                    rgba[4 * i + 2] = resultHDRData[i].b;
+                    rgba[4 * i + 3] = resultHDRData[i].a;
+                }
+
+                int ret = SaveEXR(rgba, w, h, 4, 0, outputFileName.c_str(), &err);
+                if (ret != TINYEXR_SUCCESS) {
+                    if (err) {
+                        fprintf(stderr, "err: %s\n", err);
+                        FreeEXRErrorMessage(err);
+                    }
+                }
+
+                free(rgba);
+                std::cout << "??\n";
+            }
+            else
+            {
+                outputFileName += ".png";
+                m_format = FIF_PNG;
+
+                FIBITMAP* bitmap{FreeImage_ConvertFromRawBits((BYTE*)resultData.data(), w, h, w * 4, 32,
+                        FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true)};
+
+                if (FreeImage_GetBPP(bitmap) != 24) 
+                {
+                    bitmap = FreeImage_ConvertTo24Bits(bitmap);
+                }
+
+                FreeImage_Save(m_format, bitmap, outputFileName.c_str(), 0);
+            }
             //----------------------------------------------------------------------------------------------------------------------
             std::cout << "\tcleaning up\n";
             //----------------------------------------------------------------------------------------------------------------------
             resultData = std::vector<uint32_t>();
+            resultHDRData = std::vector<Pixel>();
             imageData = std::vector<image_t>();
+            imageDataHDR = std::vector<hdrImage_t>();
             Cleanup();
         }
 
@@ -1575,22 +1729,25 @@ int main(int argc, char **argv)
     }
     else
     {
-        targetImage = "res/cornell_box/";
+        targetImage = "Animations/Bathroom01/Bathroom_LDR_0001.png";
     }
 
     try
     {
         ComputeApplication app{targetImage};
 
-        std::cout << "######\nRunning on GPU (nonlinear bialteral)\n######\n";
-        app.RunOnGPU(false, true, false, false);
+        /*
+           std::cout << "######\nRunning on GPU (nonlinear bialteral)\n######\n";
+           app.RunOnGPU(false, true, false, false);
+           PRINT_TIME;
+           */
+
+
+        std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
+        app.RunOnGPU(false, false, false, false);
         PRINT_TIME;
 
         /*
-
-           std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
-           app.RunOnGPU(false, false, false, false);
-           PRINT_TIME;
 
            std::cout << "######\nRunning on GPU (nonlocal)\n######\n";
            app.RunOnGPU(true, true, false, false);
@@ -1605,18 +1762,17 @@ int main(int argc, char **argv)
            app.RunOnGPU(true, true, true, true);
            PRINT_TIME;
 
-
+           Timer timer{};
            std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
            timer.reset();
            app.RunOnCPU(targetImage, 1);
            PRINT_TIME2;
-           */
-           Timer timer{};
 
            std::cout << "######\nRunning on CPU (8 threads bialteral)\n######\n";
            timer.reset();
            app.RunOnCPU(targetImage, 8);
            PRINT_TIME2;
+           */
     }
     catch (const std::runtime_error& e)
     {

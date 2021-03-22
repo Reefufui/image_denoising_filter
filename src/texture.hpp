@@ -27,7 +27,7 @@ class CustomVulkanTexture
         {
         }
 
-        void create(VkDevice a_device, VkPhysicalDevice a_physDevice, const int a_width, const int a_height);
+        void create(VkDevice a_device, VkPhysicalDevice a_physDevice, const int a_width, const int a_height, bool a_isHDR = false);
         void release();
 };
 

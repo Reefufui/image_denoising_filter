@@ -3,7 +3,7 @@
 
 #include <cassert>
 
-void CustomVulkanTexture::create(VkDevice a_device, VkPhysicalDevice a_physDevice, const int a_width, const int a_height)
+void CustomVulkanTexture::create(VkDevice a_device, VkPhysicalDevice a_physDevice, const int a_width, const int a_height, bool a_isHDR)
 {
     m_device = a_device;
     m_used = true;
@@ -13,7 +13,7 @@ void CustomVulkanTexture::create(VkDevice a_device, VkPhysicalDevice a_physDevic
     imgCreateInfo.pNext         = nullptr;
     imgCreateInfo.flags         = 0;
     imgCreateInfo.imageType     = VK_IMAGE_TYPE_2D;
-    imgCreateInfo.format        = VK_FORMAT_R8G8B8A8_UNORM;
+    imgCreateInfo.format        = (a_isHDR) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
     imgCreateInfo.extent        = VkExtent3D{uint32_t(a_width), uint32_t(a_height), 1};
     imgCreateInfo.mipLevels     = 1;
     imgCreateInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
@@ -61,7 +61,7 @@ void CustomVulkanTexture::create(VkDevice a_device, VkPhysicalDevice a_physDevic
         imageViewInfo.sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         imageViewInfo.flags      = 0;
         imageViewInfo.viewType   = VK_IMAGE_VIEW_TYPE_2D;
-        imageViewInfo.format     = VK_FORMAT_R8G8B8A8_UNORM;
+        imageViewInfo.format     = (a_isHDR) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
         imageViewInfo.components = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A };
         imageViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
         imageViewInfo.subresourceRange.baseMipLevel   = 0;
