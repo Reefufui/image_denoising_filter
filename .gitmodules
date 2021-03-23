@@ -4,3 +4,6 @@
 [submodule "src/vendor/tinyexr"]
 	path = src/vendor/tinyexr
 	url = https://github.com/syoyo/tinyexr.git
+[submodule "src/vendor/lodepng"]
+	path = src/vendor/lodepng
+	url = https://github.com/lvandeve/lodepng.git

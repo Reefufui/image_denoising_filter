@@ -7,12 +7,12 @@
 #include <stdexcept>
 #include <cmath>
 #include <iostream>
+#include <filesystem>
 
 #include "cpptqdm/tqdm.h"
-
 #define TINYEXR_IMPLEMENTATION
 #include "tinyexr/tinyexr.h"
-#include "FreeImage.h"
+#include "lodepng/lodepng.h"
 #include "texture.hpp"
 
 #include "vk_utils.h"
@@ -75,7 +75,7 @@ class ComputeApplication
         uint64_t                  m_transferTimeElapsed{};
         uint64_t                  m_execTimeElapsed{};
         std::string               m_imageSource{};
-        FREE_IMAGE_FORMAT         m_format{};
+        int                       m_format{};
         bool                      m_isHDR{};
         std::vector<const char *> m_enabledLayers{};
 
@@ -87,7 +87,7 @@ class ComputeApplication
         ComputeApplication(const std::string imageSource)
             : m_bufferDynamic(NULL), m_bufferMemoryDynamic(NULL), m_imageSource(imageSource) { }
 
-        static void GetImageFromGPU(VkDevice a_device, VkDeviceMemory a_stagingMem, int a_w, int a_h, uint32_t *a_imageData)
+        static void GetImageFromGPU(VkDevice a_device, VkDeviceMemory a_stagingMem, int a_w, int a_h, unsigned char *a_imageData)
         {
             void *mappedMemory = nullptr;
             vkMapMemory(a_device, a_stagingMem, 0, a_w * a_h * sizeof(float) * 4, 0, &mappedMemory);
@@ -95,10 +95,10 @@ class ComputeApplication
 
             for (int i = 0; i < a_w * a_h; ++i)
             {
-                const uint32_t r = ((uint32_t) (255.0f * (pmappedMemory[i].r)));
-                const uint32_t g = ((uint32_t) (255.0f * (pmappedMemory[i].g)));
-                const uint32_t b = ((uint32_t) (255.0f * (pmappedMemory[i].b)));
-                a_imageData[i] = (r << 0) | (g << 8) | (b << 16);
+                a_imageData[i * 4 + 0] = ((unsigned char) (255.0f * (pmappedMemory[i].r)));
+                a_imageData[i * 4 + 1] = ((unsigned char) (255.0f * (pmappedMemory[i].g)));
+                a_imageData[i * 4 + 2] = ((unsigned char) (255.0f * (pmappedMemory[i].b)));
+                a_imageData[i * 4 + 3] = ((unsigned char) (255.0f * (pmappedMemory[i].a)));
             }
 
             vkUnmapMemory(a_device, a_stagingMem);
@@ -1000,7 +1000,6 @@ class ComputeApplication
         {
             void *mappedMemory = nullptr;
 
-            std::cout << "here\n";
             if (a_linear)
             {
                 vkMapMemory(a_device, a_bufferMemoryTexel, 0, a_w * a_h * sizeof(int), 0, &mappedMemory);
@@ -1013,7 +1012,6 @@ class ComputeApplication
                 memcpy(mappedMemory, a_imageData.data(), a_w * a_h * sizeof(int));
                 vkUnmapMemory(a_device, a_bufferMemoryDynamic);
             }
-            std::cout << "here\n";
         }
 
         static void LoadImageDataToBuffer(VkDevice a_device, VkPhysicalDevice a_physDevice, std::vector<Pixel> a_imageDataHDR,
@@ -1235,14 +1233,14 @@ class ComputeApplication
 
             using image_t    = std::vector<unsigned int>;
             using hdrImage_t = std::vector<Pixel>;
+            namespace fs     = std::filesystem;
+
             std::vector<image_t>    imageData{};
             std::vector<hdrImage_t> imageDataHDR{};
 
             std::string fileName{ m_imageSource };
-            m_format = FreeImage_GetFileType(fileName.c_str());
-            if (m_format == FIF_UNKNOWN) m_format = FreeImage_GetFIFFromFilename(fileName.c_str());
-            if (m_format == FIF_UNKNOWN) throw(std::runtime_error("File format not supported"));
-            m_isHDR = (m_format == FIF_EXR);
+
+            return;
 
             int w{}, h{};
 
@@ -1281,21 +1279,35 @@ class ComputeApplication
                 }
                 else
                 {
-                    FIBITMAP* bitmap = FreeImage_Load(m_format, fileName.c_str());
-                    std::cout << FreeImage_GetBPP(bitmap) << "!\n";
-                    if (FreeImage_GetBPP(bitmap) != 32) 
+                    std::cout << "tatakae\n";
+
+                    std::vector<unsigned char> rgba(0);
+                    const char* err = nullptr;
+
+                    unsigned _w, _h;
+                    unsigned ret = lodepng::decode(rgba, _w, _h, fileName.c_str());
+                    w = (int)_w;
+                    h = (int)_h;
+
+                    if (ret)
                     {
-                        bitmap = FreeImage_ConvertTo32Bits(bitmap);
+                        throw(std::runtime_error(lodepng_error_text(ret)));
                     }
+                    else
+                    {
+                        image_t image(w * h);
 
-                    w = FreeImage_GetWidth(bitmap);
-                    h = FreeImage_GetHeight(bitmap);
-                    image_t out(w * h);
-                    FreeImage_ConvertToRawBits((BYTE*)out.data(), bitmap, w * 4, 32,
-                            FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true);
+                        for (int i = 0; i < w * h; ++i)
+                        {
+                            const uint32_t r = (uint32_t) (rgba[4 * i + 0]);
+                            const uint32_t g = (uint32_t) (rgba[4 * i + 1]);
+                            const uint32_t b = (uint32_t) (rgba[4 * i + 2]);
+                            const uint32_t a = (uint32_t) (rgba[4 * i + 3]);
+                            image[i] = (r << 0) | (g << 8) | (b << 16) | (a << 24);
+                        }
 
-                    imageData.push_back(out);
-                    FreeImage_Unload(bitmap);
+                        imageData.push_back(image);
+                    }
 
                     if (!imageData[ii].size()) throw(std::runtime_error("Can't load texture"));
                 }
@@ -1534,7 +1546,7 @@ class ComputeApplication
             std::cout << "\tgetting image back\n";
             //----------------------------------------------------------------------------------------------------------------------
 
-            image_t    resultData(w * h);
+            std::vector<unsigned char> resultData(w * h * 4);
             hdrImage_t resultHDRData(w * h);
 
             if (m_isHDR)
@@ -1576,27 +1588,22 @@ class ComputeApplication
                 }
 
                 free(rgba);
-                std::cout << "??\n";
             }
             else
             {
                 outputFileName += ".png";
-                m_format = FIF_PNG;
 
-                FIBITMAP* bitmap{FreeImage_ConvertFromRawBits((BYTE*)resultData.data(), w, h, w * 4, 32,
-                        FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true)};
+                std::cout << "\t\tencoding png\n";
 
-                if (FreeImage_GetBPP(bitmap) != 24) 
-                {
-                    bitmap = FreeImage_ConvertTo24Bits(bitmap);
-                }
+                unsigned error = lodepng::encode(outputFileName.c_str(), resultData, (unsigned)w, (unsigned)h);
 
-                FreeImage_Save(m_format, bitmap, outputFileName.c_str(), 0);
+                if (error) throw(std::runtime_error(lodepng_error_text(error)));
             }
+
             //----------------------------------------------------------------------------------------------------------------------
             std::cout << "\tcleaning up\n";
             //----------------------------------------------------------------------------------------------------------------------
-            resultData = std::vector<uint32_t>();
+            resultData = std::vector<unsigned char>();
             resultHDRData = std::vector<Pixel>();
             imageData = std::vector<image_t>();
             imageDataHDR = std::vector<hdrImage_t>();
@@ -1608,20 +1615,9 @@ class ComputeApplication
             using image_t = std::vector<unsigned int>;
             fileName += "frame-0.bmp";
 
-            m_format = FreeImage_GetFileType(fileName.c_str());
-            if (m_format == FIF_UNKNOWN) m_format = FreeImage_GetFIFFromFilename(fileName.c_str());
-            if (m_format == FIF_UNKNOWN) throw(std::runtime_error("File format not supported"));
-
-            FIBITMAP* bitmap = FreeImage_Load(m_format, fileName.c_str());
-            FIBITMAP* bitmap2 = FreeImage_ConvertTo32Bits(bitmap);
-            FreeImage_Unload(bitmap);
-
-            unsigned int w{FreeImage_GetWidth(bitmap2)};
-            unsigned int h{FreeImage_GetHeight(bitmap2)};
+            unsigned int w{};
+            unsigned int h{};
             image_t imageData(w * h * 4);
-            FreeImage_ConvertToRawBits((BYTE*)imageData.data(), bitmap2, w * 4, 32, FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true);
-
-            FreeImage_Unload(bitmap2);
 
             if (!imageData.size()) throw(std::runtime_error("Can't load texture"));
 
@@ -1700,11 +1696,6 @@ class ComputeApplication
                 const uint32_t b = ((uint32_t) (255.0f * (outputPixels[i].b)));
                 imageData[i] = (r << 0) | (g << 8) | (b << 16);
             }
-
-            bitmap = FreeImage_ConvertFromRawBits((BYTE*)imageData.data(), w, h, w * 4, 32,
-                    FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, true);
-
-            FreeImage_Save(m_format, bitmap, "cpu_result.bmp", 0);
         }
 };
 
