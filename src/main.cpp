@@ -71,12 +71,13 @@ class ComputeApplication
         bool                      m_nlmFilter{};          // if false then bialteral (default)
         bool                      m_multiframe{};         // works only with nlm
         bool                      m_execAndCopyOverlap{}; // if false then dispathes and copy/clear commands dont overlap
+        bool                      m_isHDR{};
+        bool                      m_useLayers{};
         CustomVulkanTexture       m_targetImage{};
         uint64_t                  m_transferTimeElapsed{};
         uint64_t                  m_execTimeElapsed{};
         std::string               m_imageSource{};
         int                       m_format{};
-        bool                      m_isHDR{};
         std::vector<const char *> m_enabledLayers{};
 
     public:
@@ -1196,13 +1197,14 @@ class ComputeApplication
             }
         }
 
-        void RunOnGPU(bool nlmFilter, bool nonlinear, bool multiframe, bool execAndCopyOverlap)
+        void RunOnGPU(bool nlmFilter, bool nonlinear, bool multiframe, bool execAndCopyOverlap, bool useLayers)
         {
             // Set members (bad design goes brrrrr)
             m_nlmFilter = nlmFilter;
             m_linear = !nonlinear;
             m_multiframe = multiframe;
             m_execAndCopyOverlap = execAndCopyOverlap;
+            m_useLayers = useLayers;
             assert(m_nlmFilter || !multiframe);
             assert(multiframe || !execAndCopyOverlap);
             m_execTimeElapsed = 0;
@@ -1235,13 +1237,40 @@ class ComputeApplication
             using hdrImage_t = std::vector<Pixel>;
             namespace fs     = std::filesystem;
 
-            std::vector<image_t>    imageData{};
-            std::vector<hdrImage_t> imageDataHDR{};
+            fs::path targetImg{ m_imageSource };
+            fs::path parentDir{ targetImg.parent_path() };
 
-            std::string fileName{ m_imageSource };
+            std::vector<std::string> fileNameFrames(0);
+            std::vector<std::string> fileNameLayers(0);
+
+            for (auto& p: fs::directory_iterator(parentDir.c_str()))
+            {
+                fs::path img{p};
+
+                if (p.is_directory())
+                {
+                    if (m_useLayers)
+                    {
+                        for (auto& pp: fs::directory_iterator(img.c_str()))
+                        {
+                            fileNameLayers.push_back(img.c_str());
+                        }
+                    }
+                }
+                else if (img.extension() == targetImg.extension())
+                {
+                    fileNameFrames.push_back(img.c_str());
+                }
+            }
+
+            m_isHDR = targetImg.extension() == ".hdr";
 
             return;
 
+            std::string fileName{ m_imageSource };
+
+            std::vector<image_t>    imageData{};
+            std::vector<hdrImage_t> imageDataHDR{};
             int w{}, h{};
 
             for (int ii{}; ii < framesToUse; ++ii)
@@ -1735,7 +1764,7 @@ int main(int argc, char **argv)
 
 
         std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
-        app.RunOnGPU(false, false, false, false);
+        app.RunOnGPU(false, false, false, false, true);
         PRINT_TIME;
 
         /*
