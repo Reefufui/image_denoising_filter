@@ -63,8 +63,8 @@ class ComputeApplication
         VkBuffer                  m_bufferDynamic{};
         VkBuffer                  m_bufferStaging{};
         VkBuffer                  m_bufferTexel{};
-        VkBuffer                  m_bufferNLM{};
-        VkDeviceMemory            m_bufferMemoryGPU{}, m_bufferMemoryStaging{}, m_bufferMemoryTexel{}, m_bufferMemoryNLM{}, m_bufferMemoryDynamic{};
+        VkBuffer                  m_bufferWeights{};
+        VkDeviceMemory            m_bufferMemoryGPU{}, m_bufferMemoryStaging{}, m_bufferMemoryTexel{}, m_bufferMemoryWeights{}, m_bufferMemoryDynamic{};
         VkBufferView              m_texelBufferView{};
         VkQueryPool               m_queryPool{};
         bool                      m_linear{};
@@ -372,7 +372,7 @@ class ComputeApplication
             VK_CHECK_RESULT(vkBindBufferMemory(a_device, (*a_pBuffer), (*a_pBufferMemory), 0));
         }
 
-        static void CreateNLMWeightBuffer(VkDevice a_device, VkPhysicalDevice a_physDevice, size_t a_bufferSize,
+        static void CreateWeightBuffer(VkDevice a_device, VkPhysicalDevice a_physDevice, size_t a_bufferSize,
                 VkBuffer *a_pBuffer, VkDeviceMemory *a_pBufferMemory)
         {
             VkBufferCreateInfo bufferCreateInfo{};
@@ -1159,12 +1159,12 @@ class ComputeApplication
                     m_bufferMemoryGPU = VK_NULL_HANDLE;
                 }
 
-                if (m_bufferNLM != VK_NULL_HANDLE)
+                if (m_bufferWeights != VK_NULL_HANDLE)
                 {
-                    vkFreeMemory   (m_device, m_bufferMemoryNLM, NULL);
-                    vkDestroyBuffer(m_device, m_bufferNLM, NULL);
-                    m_bufferNLM = VK_NULL_HANDLE;
-                    m_bufferMemoryNLM = VK_NULL_HANDLE;
+                    vkFreeMemory   (m_device, m_bufferMemoryWeights, NULL);
+                    vkDestroyBuffer(m_device, m_bufferWeights, NULL);
+                    m_bufferWeights = VK_NULL_HANDLE;
+                    m_bufferMemoryWeights = VK_NULL_HANDLE;
                 }
 
                 if (m_bufferTexel != VK_NULL_HANDLE)
@@ -1376,7 +1376,7 @@ class ComputeApplication
             LoadImages(w, h, fileNameLayers, layerData, imageDataHDR, false);
 
             size_t bufferSize{sizeof(Pixel) * w * h};
-            size_t bufferSizeNLM{(sizeof(Pixel) + 4 * sizeof(float)) * w * h}; // GLSL alignment
+            size_t bufferSizeWeights{(sizeof(Pixel) + 4 * sizeof(float)) * w * h}; // GLSL alignment
 
             //----------------------------------------------------------------------------------------------------------------------
             std::cout << "\tcreating io buffers/images of our shaders\n";
@@ -1393,21 +1393,23 @@ class ComputeApplication
             {
                 // for image #0
                 m_targetImage.create(m_device, m_physicalDevice, w, h, m_isHDR);
-                if (m_nlmFilter)
+                if (m_nlmFilter || m_useLayers)
                 {
                     // for image #k [0..framesToUse]
-                    m_neighbourImage.create(m_device, m_physicalDevice, w, h, m_isHDR);
+                    m_neighbourImage.create(m_device, m_physicalDevice, w, h,
+                            (m_useLayers) ? false : m_isHDR);
                     if (m_execAndCopyOverlap)
                     {
-                        m_neighbourImage2.create(m_device, m_physicalDevice, w, h, m_isHDR);
+                        m_neighbourImage2.create(m_device, m_physicalDevice, w, h,
+                                (m_useLayers) ? false : m_isHDR);
                     }
                 }
                 std::cout << "\t\tnon-linear texture created\n";
             }
 
-            if (m_nlmFilter)
+            if (m_nlmFilter || m_useLayers)
             {
-                CreateNLMWeightBuffer(m_device, m_physicalDevice, bufferSizeNLM, &m_bufferNLM, &m_bufferMemoryNLM);
+                CreateWeightBuffer(m_device, m_physicalDevice, bufferSizeWeights, &m_bufferWeights, &m_bufferMemoryWeights);
             }
 
             // NOTE: OUTPUT BUFFER FOR GPU (device local) [for result image]
@@ -1417,23 +1419,24 @@ class ComputeApplication
             std::cout << "\tcreating descriptor sets for created resourses\n";
             //----------------------------------------------------------------------------------------------------------------------
 
-            if (m_nlmFilter)
+            if (m_nlmFilter || m_useLayers)
             {
+                // for bialteral filter that uses layers information we use nlm DS since it is the same
                 // DS for recording weighted pixels for result image
                 CreateDescriptorSetLayoutNLM(m_device, &m_descriptorSetLayout, m_linear, false);
-                CreateDescriptorSetNLM(m_device, m_bufferNLM, bufferSizeNLM, &m_descriptorSetLayout,
+                CreateDescriptorSetNLM(m_device, m_bufferWeights, bufferSizeWeights, &m_descriptorSetLayout,
                         m_targetImage, m_neighbourImage, &m_descriptorPool, &m_descriptorSet);
 
                 if (m_execAndCopyOverlap)
                 {
-                    CreateDescriptorSetNLM(m_device, m_bufferNLM, bufferSizeNLM, &m_descriptorSetLayout,
+                    CreateDescriptorSetNLM(m_device, m_bufferWeights, bufferSizeWeights, &m_descriptorSetLayout,
                             m_targetImage, m_neighbourImage2, &m_descriptorPool3, &m_descriptorSet3);
                 }
 
                 // DS for building result image (by normalizing)
                 CreateDescriptorSetLayoutNLM(m_device, &m_descriptorSetLayout2, m_linear, true);
                 CreateDescriptorSetNLM2(m_device, m_bufferGPU, bufferSize, &m_descriptorSetLayout2,
-                        m_bufferNLM, bufferSizeNLM, &m_descriptorPool2, &m_descriptorSet2);
+                        m_bufferWeights, bufferSizeWeights, &m_descriptorPool2, &m_descriptorSet2);
 
                 // we use sepparate ds pools for each set
             }
@@ -1454,7 +1457,14 @@ class ComputeApplication
                 CreateComputePipelines(m_device, m_descriptorSetLayout, &m_computeShaderModule, &m_pipeline, &m_pipelineLayout,
                         "shaders/nonlocal.spv" );
                 CreateComputePipelines(m_device, m_descriptorSetLayout2, &m_computeShaderModule2, &m_pipeline2, &m_pipelineLayout2,
-                        "shaders/nonlocal_generate.spv" );
+                        "shaders/normalize.spv" );
+            }
+            else if (m_useLayers)
+            {
+                CreateComputePipelines(m_device, m_descriptorSetLayout, &m_computeShaderModule, &m_pipeline, &m_pipelineLayout,
+                        "shaders/bialteral_layers.spv" );
+                CreateComputePipelines(m_device, m_descriptorSetLayout2, &m_computeShaderModule2, &m_pipeline2, &m_pipelineLayout2,
+                        "shaders/normalize.spv" );
             }
             else
             {
@@ -1503,44 +1513,44 @@ class ComputeApplication
             // BUFFER TO TAKE DATA FROM GPU
             CreateStagingBuffer(m_device, m_physicalDevice, bufferSize, &m_bufferStaging, &m_bufferMemoryStaging);
 
-            if (m_nlmFilter)
+            if (m_execAndCopyOverlap)
             {
-                if (m_execAndCopyOverlap)
+                if (m_isHDR)
                 {
+                    LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                }
+                else
+                {
+                    LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                }
+
+                vkResetCommandBuffer(m_commandBuffer, 0);
+                RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
+                RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+
+                for (int ii{1}; ii < framesToUse; ++ii)
+                {
+                    // We are going to copy this frame to the texture while doing computations using previous frame
                     if (m_isHDR)
                     {
-                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
                     }
                     else
                     {
-                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
                     }
 
                     vkResetCommandBuffer(m_commandBuffer, 0);
-                    RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
+                    RecordCommandsOfOverlappingNLM(m_commandBuffer, w, h, m_bufferDynamic,
+                            (ii % 2 == 0) ? m_neighbourImage.getpImage() : m_neighbourImage2.getpImage(),
+                            (ii % 2 == 0) ? m_descriptorSet3             : m_descriptorSet,
+                            m_pipeline, m_pipelineLayout, m_queryPool);
                     RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
-
-                    for (int ii{1}; ii < framesToUse; ++ii)
-                    {
-                        // We are going to copy this frame to the texture while doing computations using previous frame
-                        if (m_isHDR)
-                        {
-                            LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
-                        }
-                        else
-                        {
-                            LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
-                        }
-
-                        vkResetCommandBuffer(m_commandBuffer, 0);
-                        RecordCommandsOfOverlappingNLM(m_commandBuffer, w, h, m_bufferDynamic,
-                                (ii % 2 == 0) ? m_neighbourImage.getpImage() : m_neighbourImage2.getpImage(),
-                                (ii % 2 == 0) ? m_descriptorSet3             : m_descriptorSet,
-                                m_pipeline, m_pipelineLayout, m_queryPool);
-                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
-                    }
                 }
-                else
+            }
+            else if (m_nlmFilter || m_useLayers)
+            {
+                if (m_nlmFilter)
                 {
                     // loop for LDR images
                     for (auto frameData : imageData)
@@ -1574,13 +1584,30 @@ class ComputeApplication
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
                     }
                 }
+                else // using layers
+                {
+                    for (auto frameData : layerData)
+                    {
+                        std::cout << "\t\tfeeding layer to texture\n";
+
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, frameData, w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+
+                        vkResetCommandBuffer(m_commandBuffer, 0);
+                        RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
+                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+
+                        vkResetCommandBuffer(m_commandBuffer, 0);
+                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
+                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+                    }
+                }
 
                 CreateCommandBuffer(m_device, queueFamilyIndex, m_pipeline2, m_pipelineLayout2, &m_commandPool2, &m_commandBuffer2);
 
                 if (0)
                 {
                     void *mappedMemory{};
-                    vkMapMemory(m_device, m_bufferMemoryNLM, 0, sizeof(float) * 8 * w * h, 0, &mappedMemory);
+                    vkMapMemory(m_device, m_bufferMemoryWeights, 0, sizeof(float) * 8 * w * h, 0, &mappedMemory);
 
                     NLM *nlmArr = (NLM*)mappedMemory;
 
@@ -1595,7 +1622,7 @@ class ComputeApplication
                                 << nlmArr[w * y + x].norm.r << "\n";
                         }
                     }
-                    vkUnmapMemory(m_device, m_bufferMemoryNLM);
+                    vkUnmapMemory(m_device, m_bufferMemoryWeights);
                 }
 
                 vkResetCommandBuffer(m_commandBuffer2, 0);
@@ -1603,7 +1630,7 @@ class ComputeApplication
                         bufferSize, m_bufferGPU, m_bufferStaging, w, h, m_queryPool);
                 RunCommandBuffer(m_commandBuffer2, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
             }
-            else
+            else // in case of plain bialteral
             {
                 RecordCommandsOfExecuteAndTransfer(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet,
                         bufferSize, m_bufferGPU, m_bufferStaging, w, h, m_queryPool);
@@ -1631,6 +1658,7 @@ class ComputeApplication
             outputFileName += (m_nlmFilter) ?          "-nlm"        : "-bialteral";
             outputFileName += (m_multiframe) ?         "-multiframe" : "";
             outputFileName += (m_execAndCopyOverlap) ? "-overlap"    : "";
+            outputFileName += (m_useLayers) ?          "-layers"     : "";
 
             if (m_isHDR)
             {
@@ -1893,39 +1921,37 @@ int main(int argc, char **argv)
     }
     else
     {
-        targetImage = "Animations/Bathroom01/Bathroom_LDR_0001.png";
+        targetImage = "Animations/CornellBox/Animation01_LDR_0000.png";
     }
 
     try
     {
         ComputeApplication app{targetImage};
 
-        /*
-           std::cout << "######\nRunning on GPU (nonlinear bialteral)\n######\n";
-           app.RunOnGPU(false, true, false, false, false);
-           PRINT_TIME;
+        std::cout << "######\nRunning on GPU (nonlinear bialteral)\n######\n";
+        app.RunOnGPU(false, true, false, false, false);
+        PRINT_TIME;
 
-           std::cout << "######\nRunning on GPU (nonlinear bialteral + layers)\n######\n";
-           app.RunOnGPU(false, true, false, false, true);
-           PRINT_TIME;
+        std::cout << "######\nRunning on GPU (nonlinear bialteral + layers)\n######\n";
+        app.RunOnGPU(false, true, false, false, true);
+        PRINT_TIME;
 
-           std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
-           app.RunOnGPU(false, false, false, false, false);
-           PRINT_TIME;
+        std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
+        app.RunOnGPU(false, false, false, false, false);
+        PRINT_TIME;
 
-           std::cout << "######\nRunning on GPU (nonlocal)\n######\n";
-           app.RunOnGPU(true, true, false, false, false);
-           PRINT_TIME;
+        std::cout << "######\nRunning on GPU (nonlocal)\n######\n";
+        app.RunOnGPU(true, true, false, false, false);
+        PRINT_TIME;
 
-           std::cout << "######\nRunning on GPU (multiframe nonlocal)\n######\n";
-           app.RunOnGPU(true, true, true, false, false);
-           PRINT_TIME;
+        std::cout << "######\nRunning on GPU (multiframe nonlocal)\n######\n";
+        app.RunOnGPU(true, true, true, false, false);
+        PRINT_TIME;
 
-           std::cout << "######\nRunning on GPU (multiframe nonlocal + overlapping)\n######\n";
-           app.RunOnGPU(true, true, true, true, false);
-           PRINT_TIME;
+        std::cout << "######\nRunning on GPU (multiframe nonlocal + overlapping)\n######\n";
+        app.RunOnGPU(true, true, true, true, false);
+        PRINT_TIME;
 
-*/
         Timer timer{};
         std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
         timer.reset();
