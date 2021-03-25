@@ -142,6 +142,92 @@ class ComputeApplication
             vkUnmapMemory(a_device, a_dynamicMem);
         }
 
+        static void LoadImages(int& a_w, int& a_h, const std::vector<std::string> a_fileNames, std::vector<std::vector<unsigned int>>& a_imageData,
+                std::vector<std::vector<Pixel>>& a_imageDataHDR, const bool a_isHDR)
+        {
+            for (std::string fileName : a_fileNames)
+            {
+                if (a_isHDR)
+                {
+                    float* rgba{nullptr};
+                    const char* err = nullptr;
+
+                    int ret = LoadEXR(&rgba, &a_w, &a_h, fileName.c_str(), &err);
+
+                    if (ret != TINYEXR_SUCCESS)
+                    {
+                        if (err)
+                        {
+                            fprintf(stderr, "ERR : %s\n", err);
+                            FreeEXRErrorMessage(err); // release memory of error message.
+                        }
+                    }
+                    else
+                    {
+                        std::vector<Pixel> image(a_w * a_h);
+
+                        tqdm bar{};
+                        bar.set_theme_braille();
+                        bar.set_label(fileName.c_str());
+
+                        for (int i{}; i < a_w * a_h; ++i)
+                        {
+                            bar.progress(i, a_w * a_h);
+
+                            image[i].r = rgba[4 * i + 0];
+                            image[i].g = rgba[4 * i + 1];
+                            image[i].b = rgba[4 * i + 2];
+                            image[i].a = rgba[4 * i + 3];
+                        }
+
+                        bar.finish();
+
+                        a_imageDataHDR.push_back(image);
+
+                        free(rgba);
+                    }
+                }
+                else
+                {
+                    std::vector<unsigned char> rgba(0);
+                    const char* err = nullptr;
+
+                    unsigned w, h;
+                    unsigned ret = lodepng::decode(rgba, w, h, fileName.c_str());
+                    a_w = (int)w;
+                    a_h = (int)h;
+
+                    if (ret)
+                    {
+                        throw(std::runtime_error(lodepng_error_text(ret)));
+                    }
+                    else
+                    {
+                        std::vector<unsigned int> image(w * h);
+
+                        tqdm bar{};
+                        bar.set_theme_braille();
+                        bar.set_label(fileName.c_str());
+
+                        for (int i = 0; i < w * h; ++i)
+                        {
+                            bar.progress(i, a_w * a_h);
+
+                            const uint32_t r = (uint32_t) (rgba[4 * i + 0]);
+                            const uint32_t g = (uint32_t) (rgba[4 * i + 1]);
+                            const uint32_t b = (uint32_t) (rgba[4 * i + 2]);
+                            const uint32_t a = (uint32_t) (rgba[4 * i + 3]);
+                            image[i] = (r << 0) | (g << 8) | (b << 16) | (a << 24);
+                        }
+
+                        bar.finish();
+
+                        a_imageData.push_back(image);
+                    }
+                }
+            }
+        }
+
         static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallbackFn(
                 VkDebugReportFlagsEXT                       flags,
                 VkDebugReportObjectTypeEXT                  objectType,
@@ -1040,7 +1126,8 @@ class ComputeApplication
             if (enableValidationLayers)
             {
                 auto func = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(m_instance, "vkDestroyDebugReportCallbackEXT");
-                if (func == nullptr) {
+                if (func == nullptr)
+                {
                     throw std::runtime_error("Could not load vkDestroyDebugReportCallbackEXT");
                 }
                 func(m_instance, m_debugReportCallback, NULL);
@@ -1233,12 +1320,11 @@ class ComputeApplication
 
             const int framesToUse{(multiframe) ? 10 : 1};
 
-            using image_t    = std::vector<unsigned int>;
-            using hdrImage_t = std::vector<Pixel>;
-            namespace fs     = std::filesystem;
+            namespace fs = std::filesystem;
 
             fs::path targetImg{ m_imageSource };
             fs::path parentDir{ targetImg.parent_path() };
+            std::string imageID{ m_imageSource.substr(m_imageSource.find(".") - 4, 4) };
 
             std::vector<std::string> fileNameFrames(0);
             std::vector<std::string> fileNameLayers(0);
@@ -1253,95 +1339,41 @@ class ComputeApplication
                     {
                         for (auto& pp: fs::directory_iterator(img.c_str()))
                         {
-                            fileNameLayers.push_back(img.c_str());
+                            fs::path layerImg{pp};
+
+                            if (std::string(layerImg.c_str()).find(imageID) != std::string::npos)
+                            {
+                                fileNameLayers.push_back(layerImg.c_str());
+                            }
                         }
                     }
                 }
                 else if (img.extension() == targetImg.extension())
                 {
-                    fileNameFrames.push_back(img.c_str());
+                    if (m_multiframe)
+                    {
+                        fileNameFrames.push_back(img.c_str());
+                    }
                 }
             }
 
-            m_isHDR = targetImg.extension() == ".hdr";
+            m_isHDR = targetImg.extension() == ".exr";
+            std::vector<std::string> targetImageDummy(0); // to make sure our target image is first in imageData vector
+            targetImageDummy.push_back(m_imageSource);
 
-            return;
-
-            std::string fileName{ m_imageSource };
-
-            std::vector<image_t>    imageData{};
-            std::vector<hdrImage_t> imageDataHDR{};
+            std::vector<std::vector<unsigned int>> imageData{};
+            std::vector<std::vector<unsigned int>> layerData{};
+            std::vector<std::vector<Pixel>>        imageDataHDR{};
             int w{}, h{};
 
-            for (int ii{}; ii < framesToUse; ++ii)
-            {
-                if (m_isHDR)
-                {
-                    float* rgba{nullptr};
-                    const char* err = nullptr;
+            // loading target image
+            LoadImages(w, h, targetImageDummy, imageData, imageDataHDR, m_isHDR);
 
-                    int ret = LoadEXR(&rgba, &w, &h, fileName.c_str(), &err);
+            // loading frames
+            LoadImages(w, h, fileNameFrames, imageData, imageDataHDR, m_isHDR);
 
-                    if (ret != TINYEXR_SUCCESS)
-                    {
-                        if (err) {
-                            fprintf(stderr, "ERR : %s\n", err);
-                            FreeEXRErrorMessage(err); // release memory of error message.
-                        }
-                    }
-                    else
-                    {
-                        hdrImage_t image(w * h);
-
-                        for (int i{}; i < w * h; ++i)
-                        {
-                            image[i].r = rgba[4 * i + 0];
-                            image[i].g = rgba[4 * i + 1];
-                            image[i].b = rgba[4 * i + 2];
-                            image[i].a = rgba[4 * i + 3];
-                        }
-
-                        imageDataHDR.push_back(image);
-
-                        free(rgba);
-                    }
-                }
-                else
-                {
-                    std::cout << "tatakae\n";
-
-                    std::vector<unsigned char> rgba(0);
-                    const char* err = nullptr;
-
-                    unsigned _w, _h;
-                    unsigned ret = lodepng::decode(rgba, _w, _h, fileName.c_str());
-                    w = (int)_w;
-                    h = (int)_h;
-
-                    if (ret)
-                    {
-                        throw(std::runtime_error(lodepng_error_text(ret)));
-                    }
-                    else
-                    {
-                        image_t image(w * h);
-
-                        for (int i = 0; i < w * h; ++i)
-                        {
-                            const uint32_t r = (uint32_t) (rgba[4 * i + 0]);
-                            const uint32_t g = (uint32_t) (rgba[4 * i + 1]);
-                            const uint32_t b = (uint32_t) (rgba[4 * i + 2]);
-                            const uint32_t a = (uint32_t) (rgba[4 * i + 3]);
-                            image[i] = (r << 0) | (g << 8) | (b << 16) | (a << 24);
-                        }
-
-                        imageData.push_back(image);
-                    }
-
-                    if (!imageData[ii].size()) throw(std::runtime_error("Can't load texture"));
-                }
-
-            }
+            // loading layers
+            LoadImages(w, h, fileNameLayers, layerData, imageDataHDR, false);
 
             size_t bufferSize{sizeof(Pixel) * w * h};
             size_t bufferSizeNLM{(sizeof(Pixel) + 4 * sizeof(float)) * w * h}; // GLSL alignment
@@ -1510,29 +1542,36 @@ class ComputeApplication
                 }
                 else
                 {
-                    for (int ii{0}; ii < framesToUse; ++ii)
+                    // loop for LDR images
+                    for (auto frameData : imageData)
                     {
-                        std::cout << "\t\t loading image #" << ii << " data\n";
+                        std::cout << "\t\t feeding image to texture\n";
 
-                        if (m_isHDR)
-                        {
-                            LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
-                        }
-                        else
-                        {
-                            LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
-                        }
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, frameData, w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
 
                         vkResetCommandBuffer(m_commandBuffer, 0);
                         RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
-                        std::cout << "\t\t feeding #" << ii << "texture our neighbour image\n";
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
 
                         vkResetCommandBuffer(m_commandBuffer, 0);
                         RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+                    }
 
-                        // we have to rerecord command buffer because we use it without overlapping: for texuture copying and computations
+                    // loop for HDR images
+                    for (auto frameData : imageDataHDR)
+                    {
+                        std::cout << "\t\t feeding image to texture\n";
+
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, frameData, w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+
+                        vkResetCommandBuffer(m_commandBuffer, 0);
+                        RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
+                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+
+                        vkResetCommandBuffer(m_commandBuffer, 0);
+                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
+                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
                     }
                 }
 
@@ -1576,7 +1615,7 @@ class ComputeApplication
             //----------------------------------------------------------------------------------------------------------------------
 
             std::vector<unsigned char> resultData(w * h * 4);
-            hdrImage_t resultHDRData(w * h);
+            std::vector<Pixel> resultHDRData(w * h);
 
             if (m_isHDR)
             {
@@ -1609,8 +1648,10 @@ class ComputeApplication
                 }
 
                 int ret = SaveEXR(rgba, w, h, 4, 0, outputFileName.c_str(), &err);
-                if (ret != TINYEXR_SUCCESS) {
-                    if (err) {
+                if (ret != TINYEXR_SUCCESS)
+                {
+                    if (err)
+                    {
                         fprintf(stderr, "err: %s\n", err);
                         FreeEXRErrorMessage(err);
                     }
@@ -1634,36 +1675,95 @@ class ComputeApplication
             //----------------------------------------------------------------------------------------------------------------------
             resultData = std::vector<unsigned char>();
             resultHDRData = std::vector<Pixel>();
-            imageData = std::vector<image_t>();
-            imageDataHDR = std::vector<hdrImage_t>();
+            imageData = std::vector<std::vector<unsigned int>>();
+            imageDataHDR = std::vector<std::vector<Pixel>>();
             Cleanup();
         }
 
         void RunOnCPU(std::string fileName, int numThreads)
         {
-            using image_t = std::vector<unsigned int>;
-            fileName += "frame-0.bmp";
+            int w{}, h{};
+            m_isHDR = std::filesystem::path(fileName.c_str()).extension() == ".exr";
 
-            unsigned int w{};
-            unsigned int h{};
-            image_t imageData(w * h * 4);
+            std::vector<Pixel> inputPixels(0);
 
-            if (!imageData.size()) throw(std::runtime_error("Can't load texture"));
-
-            std::vector<Pixel>        inputPixels(w * h);
-            std::vector<Pixel>        outputPixels(w * h);
-
-            for (int i{}; i < w * h; ++i)
+            if (m_isHDR)
             {
-                const uint32_t b = (imageData[i] & 0x00FF0000) >> 16;
-                const uint32_t g = (imageData[i] & 0x0000FF00) >> 8;
-                const uint32_t r = (imageData[i] & 0x000000FF);
+                float* rgba{nullptr};
+                const char* err = nullptr;
 
-                inputPixels[i].r = float(r)*(1.0f/255.0f);
-                inputPixels[i].g = float(g)*(1.0f/255.0f);
-                inputPixels[i].b = float(b)*(1.0f/255.0f);
-                inputPixels[i].a = 0.0f;
+                int ret = LoadEXR(&rgba, &w, &h, fileName.c_str(), &err);
+
+                if (ret != TINYEXR_SUCCESS)
+                {
+                    if (err)
+                    {
+                        fprintf(stderr, "ERR : %s\n", err);
+                        FreeEXRErrorMessage(err); // release memory of error message.
+                    }
+                }
+                else
+                {
+                    tqdm bar{};
+                    bar.set_theme_braille();
+                    std::cout << "\tloading hdr\n";
+                    bar.set_label(fileName.c_str());
+
+                    inputPixels.resize(w * h);
+
+                    for (int i{}; i < w * h; ++i)
+                    {
+                        bar.progress(i, w * h);
+
+                        inputPixels[i].r = rgba[4 * i + 0];
+                        inputPixels[i].g = rgba[4 * i + 1];
+                        inputPixels[i].b = rgba[4 * i + 2];
+                        inputPixels[i].a = rgba[4 * i + 3];
+                    }
+
+                    bar.finish();
+                    free(rgba);
+                }
             }
+            else
+            {
+                std::vector<unsigned char> rgba(0);
+                const char* err = nullptr;
+
+                unsigned uw{}, uh{};
+                unsigned ret = lodepng::decode(rgba, uw, uh, fileName.c_str());
+                w = uw; h = uh;
+
+                if (ret)
+                {
+                    throw(std::runtime_error(lodepng_error_text(ret)));
+                }
+                else
+                {
+                    std::vector<unsigned int> image(w * h);
+
+                    tqdm bar{};
+                    bar.set_theme_braille();
+                    bar.set_label(fileName.c_str());
+
+                    inputPixels.resize(w * h);
+
+                    for (unsigned int i = 0; i < w * h; ++i)
+                    {
+                        bar.progress(i, w * h);
+
+                        inputPixels[i].r = (float)rgba[4 * i + 0] * (1.0f/255.0f);
+                        inputPixels[i].g = (float)rgba[4 * i + 1] * (1.0f/255.0f);
+                        inputPixels[i].b = (float)rgba[4 * i + 2] * (1.0f/255.0f);
+                        inputPixels[i].a = (float)rgba[4 * i + 3] * (1.0f/255.0f);
+                    }
+
+                    bar.finish();
+                    rgba = std::vector<unsigned char>();
+                }
+            }
+
+            std::vector<Pixel> outputPixels(w * h);
 
             std::cout << "\tdoing computations\n";
 
@@ -1707,24 +1807,68 @@ class ComputeApplication
                             weightColor.g += curColor.g * resultWeight;
                             weightColor.b += curColor.b * resultWeight;
 
-                            normWeight     += resultWeight;
+                            normWeight    += resultWeight;
                         }
                     }
 
-                    outputPixels[y * w + x] = Pixel{ weightColor.r / normWeight, weightColor.g / normWeight, weightColor.b /normWeight, 0.0f};
+                    outputPixels[y * w + x] = Pixel{ weightColor.r / normWeight, weightColor.g / normWeight, weightColor.b /normWeight, 1.0f};
                 }
             }
 
             bar.finish();
             std::cout << "\tsaving image\n";
 
-            for (int i = 0; i < w * h; ++i)
+            std::string outputFileName{ "output-cpu" };
+
+            if (m_isHDR)
             {
-                const uint32_t r = ((uint32_t) (255.0f * (outputPixels[i].r)));
-                const uint32_t g = ((uint32_t) (255.0f * (outputPixels[i].g)));
-                const uint32_t b = ((uint32_t) (255.0f * (outputPixels[i].b)));
-                imageData[i] = (r << 0) | (g << 8) | (b << 16);
+                outputFileName += ".exr";
+
+                const char* err = nullptr;
+                float *rgba = new float[w * h * 4];
+
+                for (int i{}; i < w * h; ++i)
+                {
+                    rgba[4 * i + 0] = outputPixels[i].r;
+                    rgba[4 * i + 1] = outputPixels[i].g;
+                    rgba[4 * i + 2] = outputPixels[i].b;
+                    rgba[4 * i + 3] = outputPixels[i].a;
+                }
+
+                int ret = SaveEXR(rgba, w, h, 4, 0, outputFileName.c_str(), &err);
+                if (ret != TINYEXR_SUCCESS)
+                {
+                    if (err)
+                    {
+                        fprintf(stderr, "err: %s\n", err);
+                        FreeEXRErrorMessage(err);
+                    }
+                }
+
+                free(rgba);
             }
+            else
+            {
+                outputFileName += ".png";
+
+                std::vector<unsigned char> resultData(w * h * 4);
+
+                for (int i = 0; i < w * h; ++i)
+                {
+                    resultData[i * 4 + 0] = ((unsigned char) (255.0f * (outputPixels[i].r)));
+                    resultData[i * 4 + 1] = ((unsigned char) (255.0f * (outputPixels[i].g)));
+                    resultData[i * 4 + 2] = ((unsigned char) (255.0f * (outputPixels[i].b)));
+                    resultData[i * 4 + 3] = ((unsigned char) (255.0f * (outputPixels[i].a)));
+                }
+
+
+                std::cout << "\t\tencoding png\n";
+
+                unsigned error = lodepng::encode(outputFileName.c_str(), resultData, (unsigned)w, (unsigned)h);
+
+                if (error) throw(std::runtime_error(lodepng_error_text(error)));
+            }
+
         }
 };
 
@@ -1758,41 +1902,40 @@ int main(int argc, char **argv)
 
         /*
            std::cout << "######\nRunning on GPU (nonlinear bialteral)\n######\n";
-           app.RunOnGPU(false, true, false, false);
+           app.RunOnGPU(false, true, false, false, false);
            PRINT_TIME;
-           */
 
+           std::cout << "######\nRunning on GPU (nonlinear bialteral + layers)\n######\n";
+           app.RunOnGPU(false, true, false, false, true);
+           PRINT_TIME;
 
-        std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
-        app.RunOnGPU(false, false, false, false, true);
-        PRINT_TIME;
-
-        /*
+           std::cout << "######\nRunning on GPU (linear bialteral)\n######\n";
+           app.RunOnGPU(false, false, false, false, false);
+           PRINT_TIME;
 
            std::cout << "######\nRunning on GPU (nonlocal)\n######\n";
-           app.RunOnGPU(true, true, false, false);
+           app.RunOnGPU(true, true, false, false, false);
            PRINT_TIME;
 
-
            std::cout << "######\nRunning on GPU (multiframe nonlocal)\n######\n";
-           app.RunOnGPU(true, true, true, false);
+           app.RunOnGPU(true, true, true, false, false);
            PRINT_TIME;
 
            std::cout << "######\nRunning on GPU (multiframe nonlocal + overlapping)\n######\n";
-           app.RunOnGPU(true, true, true, true);
+           app.RunOnGPU(true, true, true, true, false);
            PRINT_TIME;
 
-           Timer timer{};
-           std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
-           timer.reset();
-           app.RunOnCPU(targetImage, 1);
-           PRINT_TIME2;
+*/
+        Timer timer{};
+        std::cout << "######\nRunning on CPU (1 thread bialteral)\n######\n";
+        timer.reset();
+        app.RunOnCPU(targetImage, 1);
+        PRINT_TIME2;
 
-           std::cout << "######\nRunning on CPU (8 threads bialteral)\n######\n";
-           timer.reset();
-           app.RunOnCPU(targetImage, 8);
-           PRINT_TIME2;
-           */
+        std::cout << "######\nRunning on CPU (8 threads bialteral)\n######\n";
+        timer.reset();
+        app.RunOnCPU(targetImage, 8);
+        PRINT_TIME2;
     }
     catch (const std::runtime_error& e)
     {

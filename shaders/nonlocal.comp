@@ -29,15 +29,9 @@ void nlmDenoice(ivec2 a_texCoord)
     const float filteringParameter = 1.f;
     const int   stride = 1;
     float normWeight = 0.001f;
-    vec4 weightColor = vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    vec4 weightColor = vec4(0.0f, 0.0f, 0.0f, 0.0f);
 
     // Loop through all pixels of an image
-    /*
-    for (int y = PATCH_WINDOW; y < u_params.height - PATCH_WINDOW; y += stride)
-    {
-        for (int x = PATCH_WINDOW; x < u_params.width - PATCH_WINDOW; x += stride)
-        {
-            */
     for (int y = a_texCoord.y - WINDOW; y < a_texCoord.y + WINDOW; y += stride)
     {
         for (int x = a_texCoord.x - WINDOW; x < a_texCoord.x + WINDOW; x += stride)
