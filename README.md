@@ -1,5 +1,9 @@
 Трифонов Андрей - 213 группа
 
+# TODO
+
+Я хочу добавить возможность передавать в шейдеры параметры фильтра через пуш-константы, а то разница при использовании нескольких кадров слабо заметна
+
 # Building
 
 Vulkan validation layers can be installed from `https://vulkan.lunarg.com/sdk/home`
