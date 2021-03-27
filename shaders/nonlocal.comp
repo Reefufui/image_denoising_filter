@@ -17,6 +17,7 @@ layout(push_constant) uniform u_params_t
 {
     int width;
     int height;
+    float filteringParameter;
 
 } u_params;
 
@@ -26,7 +27,7 @@ layout (binding = 2) uniform sampler2D u_neighbourImage;
 
 void nlmDenoice(ivec2 a_texCoord)
 {
-    const float filteringParameter = 1.f;
+    const float filteringParameter = u_params.filteringParameter;
     const int   stride = 1;
     float normWeight = 0.001f;
     vec4 weightColor = vec4(0.0f, 0.0f, 0.0f, 0.0f);

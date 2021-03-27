@@ -14,6 +14,8 @@ layout(push_constant) uniform params_t
 {
     int width;
     int height;
+    float spatialSigma;
+    float colorSigma;
 
 } params;
 
@@ -39,9 +41,9 @@ vec4 bilateralFilter(ivec2 a_texCoord)
     */
 
     // controls the influence of distant pixels
-    const float spatialSigma = 10;
+    const float spatialSigma = params.spatialSigma;
     // controls the influence of pixels with intesity value different form pixel intensity
-    const float colorSigma   = 0.2;
+    const float colorSigma   = params.colorSigma;
 
     float normWeight  = 0.;
     vec4  weightColor = vec4(0);

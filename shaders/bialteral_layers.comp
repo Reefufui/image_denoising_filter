@@ -15,6 +15,8 @@ layout(push_constant) uniform params_t
 {
     int width;
     int height;
+    float spatialSigma;
+    float colorSigma;
 
 } params;
 
@@ -27,9 +29,9 @@ void bilateralFilter(ivec2 a_texCoord)
     vec4 layerColor = texelFetch(layerTex, a_texCoord, 0);
 
     // controls the influence of distant pixels
-    const float spatialSigma = 10;
+    const float spatialSigma = params.spatialSigma;
     // controls the influence of pixels with intesity value different form pixel intensity
-    const float colorSigma   = 0.2;
+    const float colorSigma   = params.colorSigma;
 
     float normWeight  = 0.;
     vec4  weightColor = vec4(0);
@@ -44,8 +46,8 @@ void bilateralFilter(ivec2 a_texCoord)
             ivec2 curCoord      = ivec2(i, j) + a_texCoord;
             vec4  curColor      = texelFetch(layerTex, curCoord, 0);
             float colorDistance = sqrt(float(pow(layerColor.x - curColor.x, 2)
-                + pow(layerColor.y - curColor.y, 2)
-                + pow(layerColor.z - curColor.z, 2)));
+                        + pow(layerColor.y - curColor.y, 2)
+                        + pow(layerColor.z - curColor.z, 2)));
             float colorWeight   = exp(-0.5 * pow(colorDistance / colorSigma, 2.));
 
             float resultWeight = spatialWeight * colorWeight;
@@ -54,6 +56,7 @@ void bilateralFilter(ivec2 a_texCoord)
             normWeight  += resultWeight;
         }
     }
+
     imageData[params.width * gl_GlobalInvocationID.y + gl_GlobalInvocationID.x].weightColor += weightColor;
     imageData[params.width * gl_GlobalInvocationID.y + gl_GlobalInvocationID.x].normWeight  += normWeight;
 }

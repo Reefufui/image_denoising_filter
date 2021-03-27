@@ -689,7 +689,7 @@ class ComputeApplication
 
         static void CreateComputePipelines(VkDevice a_device, const VkDescriptorSetLayout &a_dsLayout,
                 VkShaderModule *a_pShaderModule, VkPipeline *a_pPipeline, VkPipelineLayout *a_pPipelineLayout,
-                const char *a_shaderFileName)
+                const char *a_shaderFileName, const size_t pcSize)
         {
             std::vector<uint32_t> code = vk_utils::ReadFile(a_shaderFileName);
             VkShaderModuleCreateInfo createInfo{};
@@ -708,7 +708,7 @@ class ComputeApplication
             VkPushConstantRange pcRange{};
             pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             pcRange.offset     = 0;
-            pcRange.size       = 2 * sizeof(int);
+            pcRange.size       = pcSize;
 
             VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
             pipelineLayoutCreateInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -783,7 +783,7 @@ class ComputeApplication
         }
 
         static void RecordCommandsOfExecuteAndTransfer(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline,VkPipelineLayout a_layout, const VkDescriptorSet &a_ds,
-                size_t a_bufferSize, VkBuffer a_bufferGPU, VkBuffer a_bufferStaging, int a_w, int a_h, VkQueryPool a_queryPool)
+                size_t a_bufferSize, VkBuffer a_bufferGPU, VkBuffer a_bufferStaging, int a_w, int a_h, VkQueryPool a_queryPool, bool normKernel)
         {
             VkCommandBufferBeginInfo beginInfo{};
             beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -800,6 +800,12 @@ class ComputeApplication
 
             int wh[2]{ a_w, a_h };
             vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
+
+            if (!normKernel) // plain bialteral denoicing example
+            {
+                float filteringParam[2]{ 10.0f, 0.2f };
+                vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 2 * sizeof(int), 2 * sizeof(float), filteringParam);
+            }
 
             vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
 
@@ -841,7 +847,7 @@ class ComputeApplication
         }
 
         static void RecordCommandsOfExecuteNLM(VkCommandBuffer a_cmdBuff, VkPipeline a_pipeline,VkPipelineLayout a_layout, const VkDescriptorSet &a_ds,
-                int a_w, int a_h, VkQueryPool a_queryPool)
+                int a_w, int a_h, VkQueryPool a_queryPool, bool nlm)
         {
             VkCommandBufferBeginInfo beginInfo{};
             beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -858,6 +864,17 @@ class ComputeApplication
 
             int wh[2]{ a_w, a_h };
             vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
+
+            if (nlm)
+            {
+                float filteringParam{ 1.0f };
+                vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 2 * sizeof(int), sizeof(float), &filteringParam);
+            }
+            else // we also use this nlm command buffer for layers usage with bialteral
+            {
+                float filteringParam[2]{ 10.0f, .2f };
+                vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 2 * sizeof(int), 2 * sizeof(float), filteringParam);
+            }
 
             vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
 
@@ -887,6 +904,9 @@ class ComputeApplication
 
             int wh[2]{ a_w, a_h };
             vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
+
+            float filteringParam{ 1.0f };
+            vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 2 * sizeof(int), sizeof(float), &filteringParam);
 
             vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
 
@@ -1455,21 +1475,22 @@ class ComputeApplication
             if (m_nlmFilter)
             {
                 CreateComputePipelines(m_device, m_descriptorSetLayout, &m_computeShaderModule, &m_pipeline, &m_pipelineLayout,
-                        "shaders/nonlocal.spv" );
+                        "shaders/nonlocal.spv", 2 * sizeof(int) + sizeof(float)); // pc: width (i), height (i), flitering param (f)
                 CreateComputePipelines(m_device, m_descriptorSetLayout2, &m_computeShaderModule2, &m_pipeline2, &m_pipelineLayout2,
-                        "shaders/normalize.spv" );
+                        "shaders/normalize.spv", 2 * sizeof(int)); // pc: width (i), height (i)
             }
             else if (m_useLayers)
             {
                 CreateComputePipelines(m_device, m_descriptorSetLayout, &m_computeShaderModule, &m_pipeline, &m_pipelineLayout,
-                        "shaders/bialteral_layers.spv" );
+                        "shaders/bialteral_layers.spv", 2 * sizeof(int) + 2 * sizeof(float)); // pc: width (i), height (i), spatialSigma (f), colorSigma (f)
                 CreateComputePipelines(m_device, m_descriptorSetLayout2, &m_computeShaderModule2, &m_pipeline2, &m_pipelineLayout2,
-                        "shaders/normalize.spv" );
+                        "shaders/normalize.spv", 2 * sizeof(int)); // pc: width (i), height (i)
             }
             else
             {
                 CreateComputePipelines(m_device, m_descriptorSetLayout, &m_computeShaderModule, &m_pipeline, &m_pipelineLayout,
-                        (m_linear) ? "shaders/bialteral_linear.spv" : "shaders/bialteral.spv");
+                        (m_linear) ? "shaders/bialteral_linear.spv" : "shaders/bialteral.spv",
+                        2 * sizeof(int) + 2 * sizeof(float)); // pc: width (i), height (i), spatialSigma (f), colorSigma (f)
             }
 
             //----------------------------------------------------------------------------------------------------------------------
@@ -1513,44 +1534,44 @@ class ComputeApplication
             // BUFFER TO TAKE DATA FROM GPU
             CreateStagingBuffer(m_device, m_physicalDevice, bufferSize, &m_bufferStaging, &m_bufferMemoryStaging);
 
-            if (m_execAndCopyOverlap)
+            if (m_nlmFilter || m_useLayers)
             {
-                if (m_isHDR)
+                if (m_execAndCopyOverlap)
                 {
-                    LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
-                }
-                else
-                {
-                    LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
-                }
-
-                vkResetCommandBuffer(m_commandBuffer, 0);
-                RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
-                RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
-
-                for (int ii{1}; ii < framesToUse; ++ii)
-                {
-                    // We are going to copy this frame to the texture while doing computations using previous frame
                     if (m_isHDR)
                     {
-                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
                     }
                     else
                     {
-                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[0], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
                     }
 
                     vkResetCommandBuffer(m_commandBuffer, 0);
-                    RecordCommandsOfOverlappingNLM(m_commandBuffer, w, h, m_bufferDynamic,
-                            (ii % 2 == 0) ? m_neighbourImage.getpImage() : m_neighbourImage2.getpImage(),
-                            (ii % 2 == 0) ? m_descriptorSet3             : m_descriptorSet,
-                            m_pipeline, m_pipelineLayout, m_queryPool);
+                    RecordCommandsOfCopyImageDataToTexture(m_commandBuffer, w, h, m_bufferDynamic, m_neighbourImage.getpImage(), m_queryPool);
                     RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+
+                    for (int ii{1}; ii < framesToUse; ++ii)
+                    {
+                        // We are going to copy this frame to the texture while doing computations using previous frame
+                        if (m_isHDR)
+                        {
+                            LoadImageDataToBuffer(m_device, m_physicalDevice, imageDataHDR[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        }
+                        else
+                        {
+                            LoadImageDataToBuffer(m_device, m_physicalDevice, imageData[ii], w, h, m_bufferMemoryTexel, m_bufferMemoryDynamic, false);
+                        }
+
+                        vkResetCommandBuffer(m_commandBuffer, 0);
+                        RecordCommandsOfOverlappingNLM(m_commandBuffer, w, h, m_bufferDynamic,
+                                (ii % 2 == 0) ? m_neighbourImage.getpImage() : m_neighbourImage2.getpImage(),
+                                (ii % 2 == 0) ? m_descriptorSet3             : m_descriptorSet,
+                                m_pipeline, m_pipelineLayout, m_queryPool);
+                        RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
+                    }
                 }
-            }
-            else if (m_nlmFilter || m_useLayers)
-            {
-                if (m_nlmFilter)
+                else if (m_nlmFilter)
                 {
                     // loop for LDR images
                     for (auto frameData : imageData)
@@ -1564,7 +1585,7 @@ class ComputeApplication
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
 
                         vkResetCommandBuffer(m_commandBuffer, 0);
-                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
+                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool, true);
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
                     }
 
@@ -1580,7 +1601,7 @@ class ComputeApplication
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
 
                         vkResetCommandBuffer(m_commandBuffer, 0);
-                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
+                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool, true);
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
                     }
                 }
@@ -1597,7 +1618,7 @@ class ComputeApplication
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
 
                         vkResetCommandBuffer(m_commandBuffer, 0);
-                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool);
+                        RecordCommandsOfExecuteNLM(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet, w, h, m_queryPool, false);
                         RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
                     }
                 }
@@ -1627,13 +1648,13 @@ class ComputeApplication
 
                 vkResetCommandBuffer(m_commandBuffer2, 0);
                 RecordCommandsOfExecuteAndTransfer(m_commandBuffer2, m_pipeline2, m_pipelineLayout2, m_descriptorSet2,
-                        bufferSize, m_bufferGPU, m_bufferStaging, w, h, m_queryPool);
+                        bufferSize, m_bufferGPU, m_bufferStaging, w, h, m_queryPool, true);
                 RunCommandBuffer(m_commandBuffer2, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
             }
             else // in case of plain bialteral
             {
                 RecordCommandsOfExecuteAndTransfer(m_commandBuffer, m_pipeline, m_pipelineLayout, m_descriptorSet,
-                        bufferSize, m_bufferGPU, m_bufferStaging, w, h, m_queryPool);
+                        bufferSize, m_bufferGPU, m_bufferStaging, w, h, m_queryPool, false);
                 RunCommandBuffer(m_commandBuffer, m_queue, m_device, m_queryPool, m_execTimeElapsed, m_transferTimeElapsed);
             }
 
