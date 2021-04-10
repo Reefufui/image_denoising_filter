@@ -803,7 +803,7 @@ class ComputeApplication
 
             if (!normKernel) // plain bialteral denoicing example
             {
-                float filteringParam[2]{ 10.0f, 0.2f };
+                float filteringParam[2]{ 2.0f, 0.2f };
                 vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 2 * sizeof(int), 2 * sizeof(float), filteringParam);
             }
 
@@ -867,12 +867,12 @@ class ComputeApplication
 
             if (nlm)
             {
-                float filteringParam{ 1.0f };
+                float filteringParam{ 0.5f };
                 vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 2 * sizeof(int), sizeof(float), &filteringParam);
             }
             else // we also use this nlm command buffer for layers usage with bialteral
             {
-                float filteringParam[2]{ 10.0f, .2f };
+                float filteringParam[2]{ 2.0f, .2f };
                 vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 2 * sizeof(int), 2 * sizeof(float), filteringParam);
             }
 
@@ -905,7 +905,7 @@ class ComputeApplication
             int wh[2]{ a_w, a_h };
             vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int) * 2, wh);
 
-            float filteringParam{ 1.0f };
+            float filteringParam{ 0.5f };
             vkCmdPushConstants(a_cmdBuff, a_layout, VK_SHADER_STAGE_COMPUTE_BIT, 2 * sizeof(int), sizeof(float), &filteringParam);
 
             vkCmdDispatch(a_cmdBuff, (uint32_t)ceil(a_w / float(WORKGROUP_SIZE)), (uint32_t)ceil(a_h / float(WORKGROUP_SIZE)), 1);
